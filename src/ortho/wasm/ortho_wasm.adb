@@ -227,7 +227,8 @@ package body Ortho_Wasm is
       Ek_Call,         -- call $decl  (result on stack)
       Ek_Select,       -- select a b cond  (for abs)
       Ek_Zero,         -- i32.const 0
-      Ek_Addr_Stub     -- placeholder for address-of (emits i32.const 0)
+      Ek_Addr_Stub,    -- placeholder for address-of (emits i32.const 0)
+      Ek_Wrap_I32      -- i32.wrap_i64 (truncate i64 -> i32)
    );
 
    type Expr_Entry is record
@@ -501,6 +502,10 @@ package body Ortho_Wasm is
             when Ek_Call =>
                Append (Buf, "(call $" & Get_Name (Ent.Decl) &
                        To_String (Ent.Args) & ")");
+            when Ek_Wrap_I32 =>
+               Append (Buf, "(i32.wrap_i64 ");
+               Emit_Expr_To (Ent.Arg1, Buf);
+               Append (Buf, ")");
             when Ek_Select =>
                Append (Buf, "(select ");
                Emit_Expr_To (Ent.Arg1, Buf);
@@ -621,6 +626,11 @@ package body Ortho_Wasm is
       Put_Line ("  (import ""env"" ""__ghdl_signal_direct_assign"" (func $__ghdl_signal_direct_assign (param i32)))");
       Put_Line ("  (import ""env"" ""__ghdl_signal_read_driver"" (func $__ghdl_signal_read_driver (param i32 i32) (result i32)))");
       Put_Line ("  (import ""env"" ""__ghdl_signal_read_port"" (func $__ghdl_signal_read_port (param i32 i32) (result i32)))");
+      Put_Line ("  (import ""env"" ""__ghdl_stack2_mark"" (func $__ghdl_stack2_mark (result i32)))");
+      Put_Line ("  (import ""env"" ""__ghdl_stack2_release"" (func $__ghdl_stack2_release (param i32)))");
+      Put_Line ("  (import ""env"" ""__ghdl_check_stack_allocation"" (func $__ghdl_check_stack_allocation (param i32)))");
+      Put_Line ("  (import ""env"" ""__ghdl_ieee_assert_failed"" (func $__ghdl_ieee_assert_failed (param i32 i32 i32 i32)))");
+      Put_Line ("  (import ""env"" ""__ghdl_i32_mod"" (func $__ghdl_i32_mod (param i32 i32) (result i32)))");
       Put_Line ("  (memory 1)");
       Put_Line ("  (global $__sp (mut i32) (i32.const 65536))");
       Ada.Text_IO.Flush;
@@ -970,7 +980,24 @@ package body Ortho_Wasm is
    end New_Access_Element;
 
    function New_Convert_Ov (Val : O_Enode; Rtype : O_Tnode) return O_Enode is
-      pragma Unreferenced (Rtype); begin return Val; end New_Convert_Ov;
+      Src_Kind : constant Wat_Kind :=
+        (if Val = 0 then Wk_I32
+         elsif Exprs (Natural (Val)).Etype = 0 then Wk_I32
+         else Types (Natural (Exprs (Natural (Val)).Etype)).Kind);
+      Dst_Kind : constant Wat_Kind :=
+        (if Rtype = 0 then Wk_I32
+         else Types (Natural (Rtype)).Kind);
+   begin
+      if Src_Kind = Wk_I64 and Dst_Kind = Wk_I32 then
+         --  Truncate i64 -> i32 using i32.wrap_i64
+         return New_Expr ((Kind  => Ek_Wrap_I32,
+                           Arg1  => Val,
+                           Etype => Rtype,
+                           others => <>));
+      end if;
+      --  No-op for same-kind or other conversions
+      return Val;
+   end New_Convert_Ov;
 
    function New_Convert (Val : O_Enode; Rtype : O_Tnode) return O_Enode is
    begin return New_Convert_Ov (Val, Rtype); end New_Convert;
