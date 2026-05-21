@@ -3,9 +3,6 @@
 A fork of [GHDL](https://github.com/ghdl/ghdl) that adds a **WebAssembly (WASM) backend**, enabling VHDL designs to be compiled and simulated directly in the browser.
 
 Instead of emitting native machine code, `ghdl_wasm` emits [WebAssembly Text format (WAT)](https://webassembly.github.io/spec/core/text/index.html), which can be assembled into a `.wasm` binary and executed by any modern JavaScript runtime or browser engine.
-
-> AI coding assistance was used in the development of this backend.
-
 ---
 
 ## Status
@@ -166,7 +163,7 @@ WebAssembly backend design and implementation.
 
 Based on [GHDL](https://github.com/ghdl/ghdl) by Tristan Gingold and contributors, licensed under the GNU General Public License v2.
 
-AI coding assistance was used in the development of the WebAssembly backend (`src/ortho/wasm/`).
+AI coding assistance was used in the development of this project (`src/ortho/wasm/`).
 
 ---
 
