@@ -1,0 +1,99 @@
+name: Testing GHDL's Docker images
+
+on:
+  workflow_call:
+    inputs:
+      os_image:
+        description: 'Name of the VM image.'
+        required: true
+        type: string
+      ghdl_image:
+        description: 'Name of the GHDL image.'
+        required: true
+        type: string
+      ghdl_version:
+        description: 'GHDL version.'
+        required: true
+        type: string
+      ghdl_backend:
+        description: 'GHDL backend.'
+        required: true
+        type: string
+      testsuites:
+        description: "List of GHDL testsuites to execute while testing (space separated). Alternatively: 'all' or 'none'"
+        required: true
+        type: string
+
+jobs:
+  Test:
+    name: Test GHDL's Docker image on '${{ inputs.os_image }}'
+    runs-on: ${{ inputs.os_image }}
+    container:
+      image: ${{ inputs.ghdl_image }}
+
+    if: inputs.testsuites != 'none'
+
+    steps:
+      - name: ⏬ Checkout repository
+        uses: actions/checkout@v6
+
+      - name: Version check
+        run: |
+          ERRORS=0
+
+          printf "Checking active shell ...\n"
+          activeShell=$(readlink /proc/$$/exe)
+          if [[ "$activeShell" == "$(which bash)" ]]; then
+            printf "  Shell is Bash (%s - version %s)  ${ANSI_GREEN}[OK]${ANSI_NOCOLOR}\n" "$activeShell" "$(/bin/bash --version | head -n 1)"
+          else
+            printf "  Shell is %s ${ANSI_RED}[FAILED]${ANSI_NOCOLOR}\n" "$activeShell"
+            printf "::error title=%s::%s\n" "Test-Docker" "Active shell is not Bash. (actual: ${activeShell} != expected: $(which bash))"
+            ERROR=1
+          fi
+
+          printf "BASH_VERSION=%s\n" "${BASH_VERSION}"
+          printf "which ghdl: %s\n" "$(which ghdl)"
+
+          printf "Verify GHDL_VERSION=%s " "${GHDL_VERSION}"
+          if [[ "${GHDL_VERSION}" == "${{ inputs.ghdl_version }}" ]]; then
+            printf "${ANSI_LIGHT_GREEN}%s${ANSI_NOCOLOR}\n" "[PASSED]"
+          else
+            printf "${ANSI_LIGHT_RED}%s${ANSI_NOCOLOR}\n" "[FAILED]"
+            printf "::error title=%s::%s\n" "Test-Docker" "GHDL_VERSION doesn't match. (actual: ${GHDL_VERSION} != expected: ${{ inputs.ghdl_version }})"
+            ERROR=1
+          fi
+
+          printf "Verify GHDL_BACKEND=%s " "${GHDL_BACKEND}"
+          if [[ "${GHDL_BACKEND}" == "${{ inputs.ghdl_backend }}" ]]; then
+            printf "${ANSI_LIGHT_GREEN}%s${ANSI_NOCOLOR}\n" "[PASSED]"
+          else
+            printf "${ANSI_LIGHT_RED}%s${ANSI_NOCOLOR}\n" "[FAILED]"
+            printf "::error title=%s::%s\n" "Test-Docker" "GHDL_BACKEND doesn't match. (actual: ${GHDL_BACKEND} != expected: ${{ inputs.ghdl_backend }})"
+            ERROR=1
+          fi
+
+          expected="${{ inputs.ghdl_version }}"
+          printf "Verify GHDL version '%s' ... " "${expected}"
+          if [[ "$(ghdl --version | head -n 1)" =~ ${expected//./\\.} ]]; then
+            printf "${ANSI_LIGHT_GREEN}%s${ANSI_NOCOLOR}\n" "[PASSED]"
+          else
+            printf "${ANSI_LIGHT_RED}%s${ANSI_NOCOLOR}\n" "[FAILED]"
+            printf "::error title=%s::%s\n" "Test-Docker" "GHDL version doesn't match. (actual: $(ghdl --version | head -n 1) =~ expected: ${{ inputs.ghdl_version }})"
+            ERROR=1
+
+            ghdl --version
+          fi
+
+          exit $ERROR
+
+      - name: Run tests in testsuite
+        run: |
+          cd testsuite
+
+          # no pyunit
+          if [ '${{ inputs.testsuites }}' == 'all' ]; then
+            TESTSUITES="sanity gna vests synth vpi vhpi"
+          else
+            TESTSUITES="${{ inputs.testsuites }}"
+          fi
+          ./testsuite.sh $TESTSUITES

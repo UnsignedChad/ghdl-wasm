@@ -1,0 +1,115 @@
+name: Testing GHDL
+
+on:
+  workflow_call:
+    inputs:
+      os_image:
+        description: 'Name of the OS image.'
+        required: false
+        default: 'ubuntu-24.04'
+        type: string
+      runtime:
+        description: 'MSYS2 runtime if MSYS2 is used.'
+        required: false
+        default: ''
+        type: string
+      shell:
+        description: 'Used shell'
+        required: false
+        default: 'bash'
+        type: string
+      ghdl_artifact:
+        description: 'Name of the GHDL artifact.'
+        required: true
+        type: string
+      testsuites:
+        description: "List of GHDL testsuites to execute while testing (space separated). Alternatively: 'all' or 'none'"
+        required: true
+        type: string
+
+jobs:
+  Test:
+    name: Test GHDL on '${{ inputs.os_image }}'
+    runs-on: ${{ inputs.os_image }}
+
+    if: inputs.testsuites != 'none'
+
+    defaults:
+      run:
+        shell: ${{ inputs.shell }}
+
+    steps:
+      - name: ⏬ Checkout repository
+        uses: actions/checkout@v6
+
+      - name: '🟦 Setup MSYS2 for ${{ inputs.runtime }}'
+        uses: msys2/setup-msys2@v2
+        if: startsWith(inputs.os_image, 'windows') && inputs.runtime != ''
+        with:
+          msystem: ${{ inputs.runtime }}
+          update: true
+          pacboy: "diffutils:p"
+
+      - name: 📥 Download artifacts '${{ inputs.ghdl_artifact }}' from 'Build' job
+        uses: pyTooling/download-artifact@v8
+        with:
+          name: ${{ inputs.ghdl_artifact }}
+          path: install
+
+      - name: Prepare test environment (Ubuntu)
+        if: startsWith(inputs.os_image, 'ubuntu')
+        run: |
+          sudo xargs --no-run-if-empty -a ./install/ubuntu.requirements -- apt-get install -y --no-install-recommends
+          echo "PATH=$(pwd)/install/bin:$PATH" >> $GITHUB_ENV
+          ls -lR install
+
+      - name: Prepare test environment (macOS)
+        if: startsWith(inputs.os_image, 'macos')
+        run: |
+          brew install coreutils
+          echo "PATH=$(pwd)/install/bin:$PATH" >> $GITHUB_ENV
+          cat $GITHUB_ENV
+
+      - name: Prepare test environment (MSYS2)
+        if: startsWith(inputs.os_image, 'windows') && inputs.runtime != ''
+        run: |
+          xargs --no-run-if-empty -a ./install/${{ inputs.runtime }}.requirements -- pacman -S --noconfirm
+          echo "PATH=$(pwd)/install/bin:$PATH" >> $GITHUB_ENV
+          cat $GITHUB_ENV
+
+      - name: Dependency check (Linux, MSYS2)
+        if: startsWith(inputs.os_image, 'ubuntu') || startsWith(inputs.os_image, 'windows')
+        run: |
+          ldd ./install/bin/ghdl*
+          ldd ./install/lib/libghdl-*
+          ldd ./install/lib/libghdlvpi*
+
+      - name: Dependency check (macOS)
+        if: startsWith(inputs.os_image, 'macos')
+        run: |
+          otool -L ./install/bin/ghdl*
+          otool -L ./install/lib/libghdl-*
+          otool -L ./install/lib/libghdlvpi*
+
+      - name: Version check
+        run: |
+          echo "PATH=$PATH"
+          [ '${{ inputs.runtime }}' != '' ] && export PATH=$(pwd)/install/bin:$PATH
+          echo "which ghdl: $(which ghdl)"
+          ghdl version
+          echo "disp-config:"
+          ghdl --disp-config
+
+      - name: Run tests in testsuite
+        run: |
+          [ '${{ inputs.runtime }}' != '' ] && export PATH=$(pwd)/install/bin:$PATH
+          [ ${{ startsWith(inputs.os_image, 'macos') }} ] && export PATH="/opt/homebrew/opt/coreutils/libexec/gnubin:$PATH"
+          cd testsuite
+
+          # no pyunit
+          if [ '${{ inputs.testsuites }}' == 'all' ]; then
+            TESTSUITES="sanity gna vests synth vpi vhpi"
+          else
+            TESTSUITES="${{ inputs.testsuites }}"
+          fi
+          ./testsuite.sh $TESTSUITES

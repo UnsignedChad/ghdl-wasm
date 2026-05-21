@@ -1,0 +1,54 @@
+name: Auto-generating Ada Documentation (GNATdoc)
+
+on:
+  workflow_call:
+    inputs:
+      ubuntu_image:
+        description: 'Name of the Ubuntu image.'
+        required: true
+        type: string
+      html_artifact:
+        description: 'Name of the HTML documentation artifact.'
+        required: true
+        type: string
+
+jobs:
+  Documentation:
+    name: '📚 GNATdoc'
+    runs-on: ${{ inputs.ubuntu_image }}
+
+    steps:
+      - name: '⏬ Checkout'
+        uses: actions/checkout@v6
+
+      - name: 🔧 Install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends gnat gnat-gps
+
+      - name: ⚙ Configure
+        run: |
+          GNATMAKE="gnatmake -j$(nproc)" MAKE="make -j$(nproc)" ./configure
+          echo "Check for generated *.gpr file:"
+          ls -lAh *.gpr
+
+      - name: 🔨 Make
+        run: |
+          make -j$(nproc)
+
+      - name: '📓 Run GNATdoc'
+        run: |
+          echo "GNATdoc: $(which gnatdoc) ($($(which gnatdoc) --version))"
+
+          gnatdoc -P./ghdl.gpr
+
+          echo "Check for generated GNATdoc files/folders:"
+          ls -lAh gnat*
+
+      - name: "📤 Upload artifact: '${{ inputs.html_artifact }}'"
+        uses: pyTooling/upload-artifact@v7
+        if: inputs.html_artifact != ''
+        with:
+          name: ${{ inputs.html_artifact }}
+          working-directory: gnatdoc
+          path: "*"

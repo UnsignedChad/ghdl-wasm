@@ -1,0 +1,72 @@
+name: Assemble documentation for GitHub Pages
+
+on:
+  workflow_call:
+    inputs:
+      ubuntu_image:
+        description: 'Name of the Ubuntu image.'
+        required: false
+        default: 'ubuntu-24.04'
+        type: string
+      documentation:
+        description: 'Name of the documentation artifact.'
+        required: true
+        type: string
+      coverage:
+        description: 'Name of the pyGHDL coverage artifact.'
+        required: false
+        default: ''
+        type: string
+      typing:
+        description: 'Name of the pyGHDL typing artifact.'
+        required: false
+        default: ''
+        type: string
+
+jobs:
+  PublishToGitHubPages:
+    name: 📚 Publish to GH-Pages
+    runs-on: ${{ inputs.ubuntu_image }}
+    permissions:
+      pages:    write   # to deploy to Pages
+      id-token: write   # to verify the deployment originates from an appropriate source
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    outputs:
+      github_pages_url: ${{ steps.deployment.outputs.page_url }}
+
+    steps:
+      - name: ⏬ Checkout repository
+        uses: actions/checkout@v6
+
+      - name: 📥 Download artifacts '${{ inputs.documentation }}' from 'Sphinx' job
+        uses: pyTooling/download-artifact@v8
+        with:
+          name: ${{ inputs.documentation }}
+          path: public
+
+      - name: 📥 Download artifacts '${{ inputs.coverage }}' from 'PublishCoverageResults' job
+        uses: pyTooling/download-artifact@v8
+        if: ${{ inputs.coverage != '' }}
+        with:
+          name: ${{ inputs.coverage }}
+          path: public/coverage
+
+      - name: 📥 Download artifacts '${{ inputs.typing }}' from 'StaticTypeCheck' job
+        uses: pyTooling/download-artifact@v8
+        if: ${{ inputs.typing != '' }}
+        with:
+          name: ${{ inputs.typing }}
+          path: public/typing
+
+      - name: 📑 Upload static files as artifact
+        if: github.event_name != 'pull_request'
+        uses: actions/upload-pages-artifact@v5
+        with:
+          path: public/
+
+      - name: 📖 Deploy to GitHub Pages
+        id: deployment
+        if: github.event_name != 'pull_request'
+        uses: actions/deploy-pages@v5
