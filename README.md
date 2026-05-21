@@ -3,6 +3,7 @@
 A fork of [GHDL](https://github.com/ghdl/ghdl) that adds a **WebAssembly (WASM) backend**, enabling VHDL designs to be compiled and simulated directly in the browser.
 
 Instead of emitting native machine code, `ghdl_wasm` emits [WebAssembly Text format (WAT)](https://webassembly.github.io/spec/core/text/index.html), which can be assembled into a `.wasm` binary and executed by any modern JavaScript runtime or browser engine.
+
 ---
 
 ## Status
@@ -10,11 +11,28 @@ Instead of emitting native machine code, `ghdl_wasm` emits [WebAssembly Text for
 | Component | Status |
 |---|---|
 | WAT emission from VHDL | Working |
-| `wat2wasm` binary validation | Passing |
+| `wat2wasm` binary validation | Passing — 8/8 circuits |
 | Browser JS harness | In progress |
 | Full signal/process simulation | In progress |
 
-Tested with `half_adder` and `half_adder_tb` — produces a valid ~10 KB `.wasm` binary.
+---
+
+## Test Results
+
+All circuits tested produce valid `.wasm` binaries via `wat2wasm`. Debug output from the compiler goes to **stderr** only — stdout is clean WAT.
+
+| Circuit | Analyze | Elab/WAT | wat2wasm | WASM Size | Notes |
+|---------|:-------:|:--------:|:--------:|----------:|-------|
+| `half_adder` | ✓ | ✓ | ✓ | 10,315 B | Combinational — XOR/AND |
+| `full_adder` | ✓ | ✓ | ✓ | 11,559 B | All 8 input combos tested |
+| `ripple4` | ✓ | ✓ | ✓ | 83,962 B | Structural — 4× full_adder, generate loop |
+| `dff` | ✓ | ✓ | ✓ | 10,917 B | D flip-flop, synchronous reset |
+| `counter4` | ✓ | ✓ | ✓ | 82,517 B | 4-bit up-counter, enable + reset |
+| `mux4to1` | ✓ | ✓ | ✓ | 11,605 B | 4-to-1 mux, case statement |
+| `shift_reg` | ✓ | ✓ | ✓ | 11,496 B | 8-bit SIPO shift register |
+| `alu` | ✓ | ✓ | ✓ | 85,911 B | 4-bit ADD/SUB/AND/OR, `numeric_std` |
+
+**Size pattern:** Simple combinational/sequential circuits produce ~10–12 KB binaries. Circuits that pull in `ieee.numeric_std` (ripple4, counter4, alu) produce ~82–86 KB because the full IEEE library is elaborated in.
 
 ---
 
@@ -29,7 +47,7 @@ VHDL source
                                                             └─► browser / Node.js
 ```
 
-The WAT module imports a small set of GRT (GHDL Runtime) functions from a JavaScript `env` object, which your harness must provide.
+The WAT module imports a set of GRT (GHDL Runtime) functions from a JavaScript `env` object, which your harness must provide.
 
 ---
 
@@ -52,16 +70,12 @@ sudo apt install gnat gprbuild
 ```bash
 git clone https://github.com/UnsignedChad/ghdl-wasm.git
 cd ghdl-wasm
-./configure --prefix=/usr/local
+./configure --with-ortho=wasm --prefix=/usr/local
 ```
 
-### Build the WASM Backend
+### Build
 
 ```bash
-# Configure for the wasm ortho backend
-./configure --with-ortho=wasm --prefix=/usr/local
-
-# Build
 gprbuild -P ghdl.gpr -j$(nproc)
 ```
 
@@ -93,7 +107,10 @@ LIBDIR=/usr/local/lib/ghdl/wasm
 ghdl_wasm --elab-run --std=93c -P$LIBDIR my_design_tb > my_design_tb.wat
 ```
 
-This writes the full WebAssembly Text module to stdout.
+Stdout is clean WAT. Diagnostic messages go to stderr — redirect them separately if needed:
+```bash
+ghdl_wasm --elab-run --std=93c -P$LIBDIR my_design_tb > out.wat 2>out.log
+```
 
 ### 3. Assemble to WASM
 
@@ -103,22 +120,27 @@ wat2wasm my_design_tb.wat -o my_design_tb.wasm
 
 ### 4. Run in the browser or Node.js
 
-Your JavaScript harness must provide the imported GRT functions via an `env` import object. Example (Node.js):
+Your JavaScript harness must provide all imported GRT functions via an `env` object:
 
 ```js
 const fs = require('fs');
 const bytes = fs.readFileSync('my_design_tb.wasm');
 const env = {
+  __ghdl_stack2_allocate:        (n) => 0,
+  __ghdl_stack2_mark:            () => 0,
+  __ghdl_stack2_release:         (p) => {},
+  __ghdl_check_stack_allocation: (n) => {},
+  __ghdl_memcpy:                 (dst, src, n) => {},
+  __ghdl_ieee_assert_failed:     (a, b, c, d) => { throw new Error('assert failed'); },
+  __ghdl_i32_mod:                (a, b) => ((a % b) + b) % b,
+  __ghdl_bound_check_failed:     (f, l) => { throw new Error('bound check failed'); },
+  __ghdl_integer_32_index_check_failed: (a, b, c, d) => { throw new Error('index check'); },
+  __ghdl_program_error:          (f, l, e) => { throw new Error('program error'); },
   __ghdl_process_wait_exit:      () => {},
   __ghdl_process_wait_timeout:   (t, l, r) => {},
   __ghdl_signal_direct_assign:   (s) => {},
-  __ghdl_signal_read_port:       (s, i) => 0,
   __ghdl_signal_read_driver:     (s, i) => 0,
-  __ghdl_stack2_allocate:        (n) => 0,
-  __ghdl_memcpy:                 (dst, src, n) => {},
-  __ghdl_bound_check_failed:     (f, l) => { throw new Error('bound check failed'); },
-  __ghdl_integer_32_index_check_failed: (a, b, c, d) => { throw new Error('index check failed'); },
-  __ghdl_program_error:          (f, l, e) => { throw new Error('program error'); },
+  __ghdl_signal_read_port:       (s, i) => 0,
 };
 WebAssembly.instantiate(bytes, { env }).then(({ instance }) => {
   instance.exports._initialize?.();
@@ -139,19 +161,24 @@ src/ortho/wasm/
 └── ortho_nodes.ads         # Ortho IR node types
 
 test/
-├── half_adder.vhd          # Example design
-└── half_adder_tb.vhd       # Example testbench
+├── half_adder.vhd / half_adder_tb.vhd
+├── full_adder.vhd / full_adder_tb.vhd
+├── ripple4.vhd    / ripple4_tb.vhd
+├── dff.vhd        / dff_tb.vhd
+├── counter4.vhd   / counter4_tb.vhd
+├── mux4to1.vhd    / mux4to1_tb.vhd
+├── shift_reg.vhd  / shift_reg_tb.vhd
+├── alu.vhd        / alu_tb.vhd
+└── RESULTS.md     # Detailed test results and bug notes
 ```
-
-The rest of the tree is the upstream GHDL source. See the [GHDL documentation](https://ghdl.github.io/ghdl) for details on the analyzer, elaboration model, and VHDL standard support.
 
 ---
 
 ## Known Limitations
 
-- `New_Alloca` (stack allocation) is stubbed — returns a null pointer. Designs that use dynamic stack allocation will need this fixed before they produce correct results.
-- Signal initialization and scheduling are partially implemented. Simple combinational designs work; full process/signal scheduling is in progress.
-- No export declarations yet — the elaboration entry point must be called manually from the JS harness.
+- **No executable entry point** — The WASM binary has no exported `main`. Process functions exist but require a simulation scheduler to drive them. In-browser execution is blocked until this is implemented.
+- **`New_Alloca` is stubbed** — Returns null pointer; dynamic stack allocation not yet implemented.
+- Signal initialization and scheduling are partially implemented.
 - VHDL-2008 features are not tested with the wasm backend.
 
 ---
@@ -163,7 +190,7 @@ WebAssembly backend design and implementation.
 
 Based on [GHDL](https://github.com/ghdl/ghdl) by Tristan Gingold and contributors, licensed under the GNU General Public License v2.
 
-AI coding assistance was used in the development of this project (`src/ortho/wasm/`).
+AI coding assistance was used in the development of this project.
 
 ---
 
