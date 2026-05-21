@@ -1,0 +1,3 @@
+  (input  sig1,
+   output sig2,
+   input  sig3);

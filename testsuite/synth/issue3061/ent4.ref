@@ -1,0 +1,5 @@
+  (output \sig1[a1] ,
+   output [3:0] \sig1[b1] ,
+   input  [1:0] \sig2[a2] ,
+   input  [3:0] \sig2[b2] ,
+   output sig3);

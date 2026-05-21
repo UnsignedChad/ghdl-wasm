@@ -1,0 +1,1959 @@
+--  Routine to dump (for debugging purpose) a netlist.
+--  Copyright (C) 2017 Tristan Gingold
+--
+--  This file is part of GHDL.
+--
+--  This program is free software: you can redistribute it and/or modify
+--  it under the terms of the GNU General Public License as published by
+--  the Free Software Foundation, either version 2 of the License, or
+--  (at your option) any later version.
+--
+--  This program is distributed in the hope that it will be useful,
+--  but WITHOUT ANY WARRANTY; without even the implied warranty of
+--  MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+--  GNU General Public License for more details.
+--
+--  You should have received a copy of the GNU General Public License
+--  along with this program.  If not, see <gnu.org/licenses>.
+
+with Outputs; use Outputs;
+with Types_Utils; use Types_Utils;
+with Files_Map;
+with Dyn_Maps;
+
+with Netlists.Utils; use Netlists.Utils;
+with Netlists.Iterators; use Netlists.Iterators;
+with Netlists.Gates; use Netlists.Gates;
+with Netlists.Locations;
+with Netlists.Disp_Common; use Netlists.Disp_Common;
+
+package body Netlists.Disp_Vhdl is
+   Flag_Merge_Lit : constant Boolean := True;
+   Flag_Merge_Edge : constant Boolean := True;
+
+   procedure Put_Type (W : Width) is
+   begin
+      if W = 1 then
+         Wr ("std_logic");
+      else
+         Wr ("std_logic_vector (");
+         if W = 0 then
+            Wr ("-1");
+         else
+            Wr_Uns32 (W - 1);
+         end if;
+         Wr (" downto 0)");
+      end if;
+   end Put_Type;
+
+   procedure Put_Name (N : Sname) is
+   begin
+      Disp_Common.Put_Name (N, Language_Vhdl);
+   end Put_Name;
+
+   procedure Disp_Generics (M : Module)
+   is
+      Nbr : constant Param_Nbr := Get_Nbr_Params (M);
+      Desc : Param_Desc;
+   begin
+      if Nbr = 0 then
+         return;
+      end if;
+      for I in 1 .. Nbr loop
+         if I = 1 then
+            Wr_Line ("  generic (");
+         else
+            Wr_Line (";");
+         end if;
+         Desc := Get_Param_Desc (M, I - 1);
+         Wr ("    ");
+         Put_Name (Desc.Name);
+         Wr (" : ");
+         Wr ("std_logic_vector");
+      end loop;
+      Wr_Line (");");
+   end Disp_Generics;
+
+   procedure Disp_Port
+     (Desc : Port_Desc; Pfx : String; First : in out Boolean) is
+   begin
+      if First then
+         Wr (Pfx);
+         Wr_Line ("  port (");
+         First := False;
+      else
+         Wr_Line (";");
+      end if;
+      Wr ("    ");
+      Wr (Pfx);
+      Put_Name (Desc.Name);
+      Wr (" : ");
+      case Desc.Dir is
+         when Port_In =>
+            Wr ("in");
+         when Port_Out =>
+            Wr ("out");
+         when Port_Inout =>
+            Wr ("inout");
+      end case;
+      Wr (' ');
+      Put_Type (Desc.W);
+   end Disp_Port;
+
+   procedure Disp_Ports (M : Module; Pfx : String)
+   is
+      First : Boolean;
+      Desc : Port_Desc;
+   begin
+      First := True;
+      for I in 1 .. Get_Nbr_Inputs (M) loop
+         Desc := Get_Input_Desc (M, I - 1);
+         Disp_Port (Desc, Pfx, First);
+      end loop;
+      for I in 1 .. Get_Nbr_Outputs (M) loop
+         Desc := Get_Output_Desc (M, I - 1);
+         Disp_Port (Desc, Pfx, First);
+      end loop;
+      if not First then
+         Wr_Line (");");
+      end if;
+   end Disp_Ports;
+
+   procedure Disp_Net_Name (N : Net) is
+   begin
+      Disp_Common.Disp_Net_Name (N, Language_Vhdl);
+   end Disp_Net_Name;
+
+   function Get_Lit_Quote (Wd : Width; Force_Arr : Boolean) return Character is
+   begin
+      if Force_Arr or else Wd /= 1 then
+         return '"';
+      else
+         return ''';
+      end if;
+   end Get_Lit_Quote;
+
+   procedure Disp_Binary_Lit
+     (Va : Uns32; Zx : Uns32; Wd : Width; Force_Arr : Boolean)
+   is
+      Q : constant Character := Get_Lit_Quote (Wd, Force_Arr);
+   begin
+      Wr (Q);
+      Disp_Binary_Digits (Va, Zx, Natural (Wd));
+      Wr (Q);
+   end Disp_Binary_Lit;
+
+   procedure Disp_Const_Bit (Inst : Instance)
+   is
+      W : constant Width := Get_Width (Get_Output (Inst, 0));
+      Nd : constant Width := W / 32;
+      Ld : constant Natural := Natural (W mod 32);
+   begin
+      Wr ('"');
+      if Ld > 0 then
+         Disp_Binary_Digits (Get_Param_Uns32 (Inst, Param_Idx (Nd)), 0, Ld);
+      end if;
+      for I in reverse 1 .. Nd loop
+         Disp_Binary_Digits
+           (Get_Param_Uns32 (Inst, Param_Idx (I - 1)), 0, 32);
+      end loop;
+      Wr ('"');
+   end Disp_Const_Bit;
+
+   procedure Disp_Const_Log (Inst : Instance)
+   is
+      W : constant Width := Get_Width (Get_Output (Inst, 0));
+      Nd : constant Width := W / 32;
+      Ld : constant Natural := Natural (W mod 32);
+   begin
+      Wr ('"');
+      if Ld > 0 then
+         Disp_Binary_Digits (Get_Param_Uns32 (Inst, Param_Idx (2 * Nd)),
+                             Get_Param_Uns32 (Inst, Param_Idx (2 * Nd + 1)),
+                             Ld);
+      end if;
+      for I in reverse 1 .. Nd loop
+         Disp_Binary_Digits
+           (Get_Param_Uns32 (Inst, Param_Idx (2 * (I - 1))),
+            Get_Param_Uns32 (Inst, Param_Idx (2 * (I - 1)) + 1),
+            32);
+      end loop;
+      Wr ('"');
+   end Disp_Const_Log;
+
+   procedure Disp_X_Lit (W : Width; C : Character; Force_Arr : Boolean)
+   is
+      Q : constant Character := Get_Lit_Quote (W, Force_Arr);
+   begin
+      if W <= 8 then
+         Wr (Q);
+         Wr ((1 .. Natural (W) => C));
+         Wr (Q);
+      else
+         Wr ('(');
+         Wr_Uns32 (W - 1);
+         Wr (" downto 0 => '");
+         Wr (C);
+         Wr ("')");
+      end if;
+   end Disp_X_Lit;
+
+   procedure Disp_Extract (Inst : Instance);
+
+   --  If FORCE_ARR is set, use double quotes instead of quotes with width is
+   --  1.  This is used for signed/unsigned type qualification.
+   procedure Disp_Constant_Inline
+     (Inst : Instance; Force_Arr : Boolean := False)
+   is
+      Imod : constant Module := Get_Module (Inst);
+      O : constant Net := Get_Output (Inst, 0);
+   begin
+      case Get_Id (Imod) is
+         when Id_Const_UB32
+           | Id_Const_SB32 =>
+            Disp_Binary_Lit
+              (Get_Param_Uns32 (Inst, 0), 0,  Get_Width (O), Force_Arr);
+         when Id_Const_UL32 =>
+            Disp_Binary_Lit (Get_Param_Uns32 (Inst, 0),
+                             Get_Param_Uns32 (Inst, 1),
+                             Get_Width (O), Force_Arr);
+         when Id_Const_Z =>
+            Disp_X_Lit (Get_Width (O), 'Z', Force_Arr);
+         when Id_Const_X =>
+            Disp_X_Lit (Get_Width (O), 'X', Force_Arr);
+         when Id_Const_Bit =>
+            Disp_Const_Bit (Inst);
+         when Id_Const_Log =>
+            Disp_Const_Log (Inst);
+         when Id_Extract =>
+            Disp_Extract (Inst);
+         when others => raise Internal_Error;
+      end case;
+   end Disp_Constant_Inline;
+
+   procedure Disp_Const_Bit (Inst : Instance; Off : Uns32)
+   is
+      Val : Uns32;
+      Zx : Uns32;
+   begin
+      case Get_Id (Inst) is
+         when Id_Const_Bit =>
+            Zx := 0;
+            Val := Get_Param_Uns32 (Inst, Param_Idx (Off / 32));
+            Val := Shift_Right (Val, Natural (Off mod 32)) and 1;
+         when Id_Const_Log =>
+            Zx := Get_Param_Uns32 (Inst, 2 * Param_Idx (Off / 32) + 1);
+            Zx := Shift_Right (Zx, Natural (Off mod 32)) and 1;
+            Val := Get_Param_Uns32 (Inst, 2 * Param_Idx (Off / 32));
+            Val := Shift_Right (Val, Natural (Off mod 32)) and 1;
+         when Id_Const_UB32 =>
+            Zx := 0;
+            if Off < 32 then
+               Val := Get_Param_Uns32 (Inst, 0);
+               Val := Shift_Right (Val, Natural (Off mod 32)) and 1;
+            else
+               Val := 0;
+            end if;
+         when Id_Const_UL32 =>
+            if Off < 32 then
+               Val := Get_Param_Uns32 (Inst, 0);
+               Val := Shift_Right (Val, Natural (Off mod 32)) and 1;
+               Zx := Get_Param_Uns32 (Inst, 1);
+               Zx := Shift_Right (Zx, Natural (Off mod 32)) and 1;
+            else
+               Val := 0;
+               Zx := 0;
+            end if;
+         when Id_Const_X =>
+            Zx := 1;
+            Val := 1;
+         when others => raise Internal_Error;
+      end case;
+      Wr (Bchar (Zx * 2 + Val));
+   end Disp_Const_Bit;
+
+   procedure Disp_Instance_Gate (Inst : Instance)
+   is
+      Imod : constant Module := Get_Module (Inst);
+      Id : constant Module_Id := Get_Id (Imod);
+      Max_Inp_Idx : constant Port_Idx := Get_Nbr_Inputs (Imod);
+      Max_Out_Idx : constant Port_Idx := Get_Nbr_Outputs (Imod);
+      Has_Ports : constant Boolean := Max_Inp_Idx + Max_Out_Idx > 0;
+      Idx : Port_Idx;
+      Name : Sname;
+      First : Boolean;
+      Param : Param_Desc;
+      Drv : Net;
+      Drv_Inst : Instance;
+   begin
+      Wr ("  ");
+      Put_Instance_Name (Get_Instance_Name (Inst), Language_Vhdl);
+      Wr (" : ");
+
+      --  Gate name
+      Name := Get_Module_Name (Imod);
+      if Id < Id_User_None then
+         Wr ("entity work.gate_");
+         pragma Assert (Get_Sname_Kind (Name) = Sname_System);
+         Put_Id (Get_Sname_Suffix (Name));
+      else
+         if Get_Self_Instance (Imod) /= No_Instance then
+            --  For blackboxes, use component instantiation.
+            --  For normal instances, use entity instantiation.
+            Wr ("entity work.");
+         end if;
+         Put_Name (Name);
+      end if;
+
+      if Get_Nbr_Params (Imod) /= 0 then
+         Wr_Line (" generic map (");
+         for P in 1 .. Get_Nbr_Params (Inst) loop
+            Param := Get_Param_Desc (Imod, P - 1);
+            if P > 1 then
+               Wr_Line (",");
+            end if;
+            Wr ("    ");
+            Put_Interface_Name (Param.Name, Language_Vhdl);
+            Wr (" => ");
+            case Param.Typ is
+               when Param_Uns32 =>
+                  Wr_Uns32 (Get_Param_Uns32 (Inst, P - 1));
+               when Param_Pval_String =>
+                  Disp_Pval_String (Get_Param_Pval (Inst, P - 1));
+               when Param_Pval_Vector
+                 | Param_Pval_Time_Ps
+                 | Param_Pval_Boolean =>
+                  Disp_Pval_Binary (Get_Param_Pval (Inst, P - 1));
+               when Param_Pval_Real =>
+                  Disp_Pval_Fp64 (Get_Param_Pval (Inst, P - 1));
+               when Param_Pval_Signed =>
+                  Disp_Pval_Signed (Get_Param_Pval (Inst, P - 1));
+               when Param_Pval_Unsigned =>
+                  Disp_Pval_Unsigned (Get_Param_Pval (Inst, P - 1));
+               when Param_Invalid =>
+                  Wr ("*invalid*");
+            end case;
+         end loop;
+         Wr_Line (")");
+         if Has_Ports then
+            Wr ("   ");
+         end if;
+      end if;
+
+      if Has_Ports then
+         Wr_Line (" port map (");
+
+         First := True;
+         --  Inputs
+         Idx := 0;
+         for I of Inputs (Inst) loop
+            if First then
+               First := False;
+            else
+               Wr_Line (",");
+            end if;
+            Wr ("    ");
+            if Idx < Max_Inp_Idx then
+               Put_Interface_Name
+                 (Get_Input_Desc (Imod, Idx).Name, Language_Vhdl);
+               Idx := Idx + 1;
+               Wr (" => ");
+            end if;
+            Drv := Get_Driver (I);
+            Drv_Inst := Get_Net_Parent (Drv);
+            if Get_Id (Drv_Inst) in Constant_Module_Id then
+               Disp_Constant_Inline (Drv_Inst);
+            else
+               Disp_Net_Name (Drv);
+            end if;
+         end loop;
+         --  Outputs
+         Idx := 0;
+         for O of Outputs_Iterate (Inst) loop
+            if First then
+               First := False;
+            else
+               Wr_Line (",");
+            end if;
+            Wr ("    ");
+            Put_Interface_Name
+              (Get_Output_Desc (Imod, Idx).Name, Language_Vhdl);
+            Idx := Idx + 1;
+            Wr (" => ");
+            declare
+               I : Input;
+            begin
+               I := Get_First_Sink (O);
+               if I = No_Input then
+                  Wr ("open");
+               elsif Direct_Conn_Output (Inst, O) then
+                  declare
+                     I_Inst : constant Instance := Get_Input_Parent (I);
+                     I_M : constant Module := Get_Module (I_Inst);
+                     I_Idx : constant Port_Idx := Get_Port_Idx (I);
+                  begin
+                     Put_Name (Get_Output_Desc (I_M, I_Idx).Name);
+                  end;
+               else
+                  Disp_Net_Name (O);
+               end if;
+            end;
+         end loop;
+         Wr (")");
+      end if;
+      Wr_Line (";");
+   end Disp_Instance_Gate;
+
+   procedure Disp_Memory_Init_Full (W : Width; Val : Character) is
+   begin
+      Wr (" (others => ");
+      if W = 1 then
+         Wr ("'");
+         Wr (Val);
+         Wr ("'");
+      else
+         Wr ("(others => '");
+         Wr (Val);
+         Wr ("')");
+      end if;
+      Wr_Line (");");
+   end Disp_Memory_Init_Full;
+
+   procedure Disp_Memory_Init (Val : Net; W : Width; Depth : Width)
+   is
+      Inst : constant Instance := Get_Net_Parent (Val);
+      Q : constant Character := Get_Lit_Quote (W, False);
+   begin
+      case Get_Id (Inst) is
+         when Id_Const_X =>
+            Disp_Memory_Init_Full (W, 'X');
+            return;
+         when Id_Const_UB32 =>
+            if Get_Param_Uns32 (Inst, 0) = 0 then
+               Disp_Memory_Init_Full (W, '0');
+               return;
+            end if;
+         when others =>
+            null;
+      end case;
+
+      Wr_Line;
+      for I in reverse 0 .. Depth - 1 loop
+         Wr ("      ");
+         if I = Depth - 1 then
+            Wr ("(");
+         else
+            Wr (" ");
+         end if;
+         Wr_Uns32 (I);
+         Wr (" => ");
+         Wr (Q);
+         for J in reverse 0 .. W - 1 loop
+            Disp_Const_Bit (Inst, I * W + J);
+         end loop;
+         Wr (Q);
+         if I /= 0 then
+            Wr_Line (",");
+         else
+            Wr_Line (");");
+         end if;
+      end loop;
+   end Disp_Memory_Init;
+
+   --  Return True if constant INST is connected to an instance that needs
+   --  a name.  In that case, a signal will be created and driven.
+   function Need_Signal (Inst : Instance) return Boolean
+   is
+      I : Input;
+   begin
+      I := Get_First_Sink (Get_Output (Inst, 0));
+      while I /= No_Input loop
+         if Need_Name (Get_Input_Parent (I)) then
+            return True;
+         end if;
+         I := Get_Next_Sink (I);
+      end loop;
+      return False;
+   end Need_Signal;
+
+   type Conv_Type is
+     (Conv_None,
+      Conv_Slv, Conv_Unsigned, Conv_Signed,
+      Conv_Edge, Conv_Clock,
+
+      --  Only for input: disp the net (prepended by ", ") if it's a real net;
+      --  do not display constant expressions.
+      Conv_Sensitivity);
+
+   procedure Disp_Net_Expr (N : Net; Inst : Instance; Conv : Conv_Type)
+   is
+      Net_Inst : Instance;
+   begin
+      if N = No_Net then
+         Wr ("<unassigned>");
+         return;
+      end if;
+
+      Net_Inst := Get_Net_Parent (N);
+      if Flag_Merge_Lit
+        and then Get_Id (Net_Inst) in Constant_Module_Id
+        and then not Need_Name (Inst)
+      then
+         case Conv is
+            when Conv_None =>
+               Disp_Constant_Inline (Net_Inst);
+            when Conv_Slv =>
+               if Get_Width (N) = 1 then
+                  Wr ("std_logic'(");
+               else
+                  Wr ("std_logic_vector'(");
+               end if;
+               Disp_Constant_Inline (Net_Inst);
+               Wr (")");
+            when Conv_Unsigned =>
+               Wr ("unsigned'(");
+               Disp_Constant_Inline (Net_Inst, True);
+               Wr (")");
+            when Conv_Signed =>
+               Wr ("signed'(");
+               Disp_Constant_Inline (Net_Inst, True);
+               Wr (")");
+            when Conv_Edge
+              | Conv_Clock =>
+               --  Not expected: a constant is not an edge.
+               raise Internal_Error;
+            when Conv_Sensitivity =>
+               null;
+         end case;
+      else
+         case Conv is
+            when Conv_None
+              | Conv_Slv =>
+               Disp_Net_Name (N);
+            when Conv_Sensitivity =>
+               if Get_Id (Net_Inst) not in Constant_Module_Id then
+                  Wr (", ");
+                  Disp_Net_Name (N);
+               end if;
+            when Conv_Edge =>
+               case Edge_Module_Id (Get_Id (Net_Inst)) is
+                  when Id_Posedge =>
+                     Wr ("rising_edge (");
+                  when Id_Negedge =>
+                     Wr ("falling_edge (");
+               end case;
+               Disp_Net_Name (Get_Input_Net (Net_Inst, 0));
+               Wr (")");
+            when Conv_Clock =>
+               Disp_Net_Name (Get_Input_Net (Net_Inst, 0));
+            when Conv_Unsigned =>
+               Wr ("unsigned");
+               if Get_Width (N) = 1 then
+                  Wr ("'(1 => ");
+               else
+                  Wr (" (");
+               end if;
+               Disp_Net_Name (N);
+               Wr (")");
+            when Conv_Signed =>
+               Wr ("signed");
+               if Get_Width (N) = 1 then
+                  Wr ("'(1 => ");
+               else
+                  Wr (" (");
+               end if;
+               Disp_Net_Name (N);
+               Wr (")");
+         end case;
+      end if;
+   end Disp_Net_Expr;
+
+   NL : constant Character := ASCII.LF;
+
+   type Uns32_Array is array (Natural range <>) of Uns32;
+   No_Uns32_Arr : constant Uns32_Array := (1 .. 0 => 0);
+
+   --  Template:
+   --  \[C]AN
+   --   C: conversion
+   --      u: unsigned
+   --      s: signed
+   --      f: force logic (use a type qualifier to avoid ambiguity in compare)
+   --      S: sensitivity (prepend with ',' but do not display if constant)
+   --   A: argument
+   --      o: output
+   --      i: input
+   --      n: value
+   --      p: parameter
+   --      l: label
+   --   N: argument number (0-9)
+   procedure Disp_Template
+     (S : String; Inst : Instance; Val : Uns32_Array := No_Uns32_Arr)
+   is
+      I : Positive;
+      C : Character;
+      Idx : Natural;
+      N : Net;
+      Conv : Conv_Type;
+      V : Uns32;
+   begin
+      I := S'First;
+      while I <= S'Last loop
+         C := S (I);
+         --  Escape character.
+         if C = '\' then
+            I := I + 1;
+            --  Conversion (optional).
+            case S (I) is
+               when 'u' =>
+                  Conv := Conv_Unsigned;
+                  I := I + 1;
+               when 's' =>
+                  Conv := Conv_Signed;
+                  I := I + 1;
+               when 'f' =>
+                  Conv := Conv_Slv;
+                  I := I + 1;
+               when 'e' =>
+                  Conv := Conv_Edge;
+                  I := I + 1;
+               when 'c' =>
+                  Conv := Conv_Clock;
+                  I := I + 1;
+               when 'S' =>
+                  Conv := Conv_Sensitivity;
+                  I := I + 1;
+               when others =>
+                  Conv := Conv_None;
+            end case;
+            if S (I) = '\' then
+               Wr ('\');
+               I := I + 1;
+            else
+               Idx := Character'Pos (S (I + 1)) - Character'Pos ('0');
+               case S (I) is
+                  when 'o' =>
+                     pragma Assert (Conv = Conv_None);
+                     N := Get_Output (Inst, Port_Idx (Idx));
+                     Disp_Net_Name (N);
+                  when 'i' =>
+                     N := Get_Input_Net (Inst, Port_Idx (Idx));
+                     Disp_Net_Expr (N, Inst, Conv);
+                  when 'n' =>
+                     V := Val (Idx);
+                     Wr_Uns32 (V);
+                  when 'p' =>
+                     V := Get_Param_Uns32 (Inst, Param_Idx (Idx));
+                     case Conv is
+                        when Conv_None
+                          | Conv_Unsigned
+                          | Conv_Slv =>
+                           Wr_Uns32 (V);
+                        when Conv_Signed =>
+                           Wr_Int32 (To_Int32 (V));
+                        when Conv_Edge
+                          | Conv_Clock
+                          | Conv_Sensitivity =>
+                           raise Internal_Error;
+                     end case;
+                  when 'l' =>
+                     pragma Assert (Idx = 0);
+                     pragma Assert (Conv = Conv_None);
+                     Put_Name (Get_Instance_Name (Inst));
+                  when others => raise Internal_Error;
+               end case;
+
+               I := I + 2;
+            end if;
+         else
+            Wr (C);
+            I := I + 1;
+         end if;
+      end loop;
+   end Disp_Template;
+
+   procedure Disp_Extract (Inst : Instance)
+   is
+      O : constant Net := Get_Output (Inst, 0);
+      I : constant Net := Get_Input_Net (Inst, 0);
+      Wd : constant Width := Get_Width (O);
+      Off : constant Uns32 := Get_Param_Uns32 (Inst, 0);
+   begin
+      Disp_Template ("\i0", Inst);
+      if Get_Width (I) > 1 then
+         --  If width is 1, the signal is declared as a scalar and
+         --  therefore cannot be indexed.
+         if Wd > 1 then
+            Disp_Template (" (\n0 downto \n1)", Inst,
+                           (0 => Off + Wd - 1, 1 => Off));
+         elsif Wd = 1 then
+            Disp_Template (" (\n0)", Inst, (0 => Off));
+         else
+            Disp_Template (" (-1 downto 0)", Inst);
+         end if;
+      end if;
+   end Disp_Extract;
+
+   procedure Disp_Attribute_Decl (Attr : Attribute)
+   is
+      Kind  : Param_Type;
+   begin
+      Wr ("  attribute ");
+      Put_Id (Get_Attribute_Name (Attr));
+      Wr (" : ");
+      Kind := Get_Attribute_Type (Attr);
+      case Kind is
+         when Param_Invalid
+           | Param_Uns32 =>
+            Wr ("??");
+         when Param_Pval_String =>
+            Wr ("string");
+         when Param_Pval_Boolean =>
+            Wr ("boolean");
+         when Param_Pval_Vector
+           | Param_Pval_Signed
+           | Param_Pval_Unsigned
+           | Param_Pval_Real
+           | Param_Pval_Time_Ps =>
+            Wr ("integer");
+      end case;
+      Wr_Line (";");
+   end Disp_Attribute_Decl;
+
+   procedure Disp_Attribute (Attr : Attribute; Name : Sname; Akind : String)
+   is
+      Kind  : Param_Type;
+      Val   : Pval;
+   begin
+      Wr ("  attribute ");
+      Put_Id (Get_Attribute_Name (Attr));
+      Wr (" of ");
+      Put_Name (Name);
+      Wr (" : ");
+      Wr (Akind);
+      Wr (" is ");
+      Kind := Get_Attribute_Type (Attr);
+      Val := Get_Attribute_Pval (Attr);
+      case Kind is
+         when Param_Invalid
+           | Param_Uns32 =>
+            Wr ("??");
+         when Param_Pval_String =>
+            Disp_Pval_String (Val);
+         when Param_Pval_Boolean =>
+            if Read_Pval (Val, 0) /= (0, 0) then
+               Wr ("true");
+            else
+               Wr ("false");
+            end if;
+         when Param_Pval_Vector
+           | Param_Pval_Signed
+           | Param_Pval_Unsigned
+           | Param_Pval_Real
+           | Param_Pval_Time_Ps =>
+            Disp_Pval_Binary (Val);
+      end case;
+      Wr_Line (";");
+   end Disp_Attribute;
+
+   procedure Disp_Memory (Mem : Instance)
+   is
+      Ports : constant Net := Get_Output (Mem, 0);
+      Port : Net;
+      Port_Inst : Instance;
+      S : Net;
+      Data_W : Width;
+      Depth : Uns32;
+   begin
+      --  Display a process, with as sensitivity elements:
+      --    * write clocks
+      --    * read address
+      --  As statements:
+      Data_W := 0;
+      Wr ("  process (");
+      Port := Ports;
+      loop
+         Port_Inst := Get_Input_Parent (Get_First_Sink (Port));
+         case Get_Id (Port_Inst) is
+            when Id_Mem_Wr_Sync =>
+               --  Clock
+               S := Get_Input_Net (Port_Inst, 2);
+               --  Strip the edge.
+               S := Get_Input_Net (Get_Net_Parent (S), 0);
+               Data_W := Get_Width (Get_Input_Net (Port_Inst, 4));
+            when Id_Mem_Rd =>
+               --  Address
+               S := Get_Input_Net (Port_Inst, 1);
+               Data_W := Get_Width (Get_Output (Port_Inst, 1));
+            when Id_Mem_Rd_Sync =>
+               --  Clock
+               S := Get_Input_Net (Port_Inst, 2);
+               --  Strip the edge.
+               S := Get_Input_Net (Get_Net_Parent (S), 0);
+               Data_W := Get_Width (Get_Output (Port_Inst, 1));
+            when Id_Memory
+              | Id_Memory_Init =>
+               exit;
+            when others => raise Internal_Error;
+         end case;
+         if Port /= Ports then
+            Wr (", ");
+         end if;
+         Disp_Net_Name (S);
+         Port := Get_Output (Port_Inst, 0);
+      end loop;
+      Wr_Line (") is");
+
+      Depth := Get_Width (Ports) / Data_W;
+
+      --  Declare the memory.
+      Disp_Template ("    type mem_type is array (0 to \n0)" & NL,
+                     Mem, (0 => Depth - 1));
+      if Data_W = 1 then
+         Disp_Template ("      of std_logic;" & NL, Mem);
+      else
+         Disp_Template ("      of std_logic_vector (\n0 downto 0);" & NL,
+                        Mem, (0 => Data_W - 1));
+      end if;
+      Disp_Template ("    variable \l0 : mem_type", Mem);
+      if Get_Id (Mem) = Id_Memory_Init then
+         declare
+            Val : Net;
+            Val_Inst : Instance;
+         begin
+            Val := Get_Input_Net (Mem, 1);
+            Val_Inst := Get_Net_Parent (Val);
+            case Get_Id (Val_Inst) is
+               when Id_Isignal =>
+                  Val := Get_Input_Net (Val_Inst, 1);
+               when Id_Signal =>
+                  Val := Get_Input_Net (Val_Inst, 0);
+               when others =>
+                  null;
+            end case;
+            Wr (" :=");
+            Disp_Memory_Init (Val, Data_W, Depth);
+         end;
+      else
+         Wr_Line (";");
+      end if;
+
+      if Has_Instance_Attribute (Mem) then
+         declare
+            Name : constant Sname := Get_Instance_Name (Mem);
+            Attr  : Attribute;
+         begin
+            Attr := Get_Instance_First_Attribute (Mem);
+            while Attr /= No_Attribute loop
+               Wr ("  ");
+               Disp_Attribute_Decl (Attr);
+               Wr ("  ");
+               Disp_Attribute (Attr, Name, "variable");
+               Attr := Get_Attribute_Next (Attr);
+            end loop;
+         end;
+      end if;
+
+      Wr_Line ("  begin");
+      Port := Ports;
+      loop
+         Port_Inst := Get_Input_Parent (Get_First_Sink (Port));
+         case Get_Id (Port_Inst) is
+            when Id_Mem_Wr_Sync =>
+               Disp_Template
+                 ("    if \ei2 and (\fi3 = '1') then" & NL,
+                  Port_Inst);
+               Disp_Template ("      \l0 (", Mem);
+               Disp_Template ("to_integer (\ui1)) := \i4;" & NL, Port_Inst);
+               Wr_Line ("    end if;");
+            when Id_Mem_Rd =>
+               Disp_Template ("    \o1 <= ", Port_Inst);
+               Disp_Template ("\l0", Mem);
+               Disp_Template ("(to_integer (\ui1));" & NL, Port_Inst);
+            when Id_Mem_Rd_Sync =>
+               Disp_Template
+                 ("    if \ei2 and (\fi3 = '1') then" & NL,
+                  Port_Inst);
+               Disp_Template ("      \o1 <= ", Port_Inst);
+               Disp_Template ("\l0", Mem);
+               Disp_Template ("(to_integer (\ui1));" & NL, Port_Inst);
+               Wr_Line ("    end if;");
+            when Id_Memory
+              | Id_Memory_Init =>
+               exit;
+            when others => raise Internal_Error;
+         end case;
+         Port := Get_Output (Port_Inst, 0);
+      end loop;
+      Wr_Line ("  end process;");
+   end Disp_Memory;
+
+   procedure Disp_Pmux (Inst : Instance)
+   is
+      Def : constant Net := Get_Input_Net (Inst, 0);
+      W : constant Width := Get_Width (Def);
+      Q : constant Character := Get_Lit_Quote (W, False);
+   begin
+      Disp_Template ("  with \i0 select \o0 <=" & NL, Inst);
+      for I in 1 .. W loop
+         Wr ("    ");
+         Disp_Net_Expr
+           (Get_Input_Net (Inst, Port_Idx (2 + W - I)), Inst, Conv_None);
+         Wr (" when ");
+         --  One hot encoding.
+         Wr (Q);
+         for J in 1 .. W loop
+            if I = J then
+               Wr ('1');
+            else
+               Wr ('0');
+            end if;
+         end loop;
+         Wr (Q);
+         Wr ("," & NL);
+      end loop;
+      Disp_Template ("    \i1 when others;" & NL, Inst);
+   end Disp_Pmux;
+
+   procedure Disp_Instance_Inline (Inst : Instance)
+   is
+      Imod : constant Module := Get_Module (Inst);
+      Loc : constant Location_Type := Locations.Get_Location (Inst);
+      Id : constant Module_Id := Get_Id (Imod);
+   begin
+      if Loc /= No_Location then
+         declare
+            File : Name_Id;
+            Line : Positive;
+            Col : Natural;
+         begin
+            Files_Map.Location_To_Position (Loc, File, Line, Col);
+            Wr ("  -- ");
+            Put_Id (File);
+            Wr (':');
+            Wr_Uns32 (Uns32 (Line));
+            Wr (':');
+            Wr_Uns32 (Uns32 (Col));
+            Wr_Line;
+         end;
+      end if;
+      case Id is
+         when Id_Memory
+           |  Id_Memory_Init =>
+            Disp_Memory (Inst);
+         when Id_Mem_Rd
+           | Id_Mem_Rd_Sync
+           | Id_Mem_Wr_Sync =>
+            null;
+         when Id_Output =>
+            Disp_Template ("  \o0 <= \i0; -- (output)" & NL, Inst);
+         when Id_Inout
+            | Id_Iinout =>
+            --  Gates inout are special: output 1 must be connected to an
+            --  output (with the is_inout flag set) of the module.
+            Disp_Template ("  \o1 <= \i0; -- (inout - port)" & NL, Inst);
+            Disp_Template ("  \o0 <= ", Inst);
+            declare
+               Inp : constant Input := Get_First_Sink (Get_Output (Inst, 1));
+               Iinst : constant Instance := Get_Input_Parent (Inp);
+            begin
+               Put_Name (Get_Output_Name (Get_Module (Iinst),
+                                          Get_Port_Idx (Inp)));
+            end;
+            Wr ("; -- (inout - read)" & NL);
+         when Id_Signal =>
+            Disp_Template ("  \o0 <= \i0; -- (signal)" & NL, Inst);
+         when Id_Isignal =>
+            if Get_Driver (Get_Input (Inst, 0)) /= No_Net then
+               --  It is possible (and meaningful) to have unassigned
+               --  isignal.
+               Disp_Template ("  \o0 <= \i0; -- (isignal)" & NL, Inst);
+            end if;
+         when Id_Port =>
+            Disp_Template ("  \o0 <= \i0; -- (port)" & NL, Inst);
+         when Id_Nop =>
+            Disp_Template ("  \o0 <= \i0; -- (nop)" & NL, Inst);
+         when Id_Enable =>
+            Disp_Template ("  \o0 <= \i0; -- (enable)" & NL, Inst);
+         when Id_Not =>
+            Disp_Template ("  \o0 <= not \i0;" & NL, Inst);
+         when Id_Neg =>
+            Disp_Template ("  \o0 <= std_logic_vector(-\si0);" & NL, Inst);
+         when Id_Abs=>
+            Disp_Template ("  \o0 <= std_logic_vector(abs \si0);" & NL, Inst);
+         when Id_Extract =>
+            Disp_Template ("  \o0 <= ", Inst);
+            Disp_Extract (Inst);
+            Wr_Line (";");
+         when Id_Memidx =>
+            declare
+               O : constant Net := Get_Output (Inst, 0);
+               Wd : constant Width := Get_Width (O);
+               Step : constant Uns32 := Get_Param_Uns32 (Inst, 0);
+            begin
+               if Step /= 1 then
+                  Disp_Template
+                    ("  \o0 <= std_logic_vector (resize (resize (", Inst);
+                  Disp_Template
+                    ("\ui0, \n0) * \up0, \n0)); -- memidx" & NL,
+                     Inst, (0 => Wd));
+               else
+                  Disp_Template ("  \o0 <= \i0; -- memidx" & NL, Inst);
+               end if;
+            end;
+         when Id_Addidx =>
+            declare
+               W0 : constant Width := Get_Width (Get_Input_Net (Inst, 0));
+               W1 : constant Width := Get_Width (Get_Input_Net (Inst, 1));
+            begin
+               if W0 > W1 then
+                  Disp_Template
+                    ("  \o0 <= std_logic_vector (\ui0 + resize(\ui1, \n0));",
+                     Inst, (0 => W0));
+               elsif W0 < W1 then
+                  Disp_Template
+                    ("  \o0 <= std_logic_vector (resize (\ui0, \n0) + \ui1);",
+                     Inst, (0 => W1));
+               else
+                  pragma Assert (W0 = W1);
+                  Disp_Template
+                    ("  \o0 <= std_logic_vector (\ui0 + \ui1);", Inst);
+               end if;
+               Wr_Line (" -- addidx");
+            end;
+         when Id_Dyn_Extract =>
+            declare
+               O : constant Net := Get_Output (Inst, 0);
+               Wd : constant Width := Get_Width (O);
+               Off : constant Uns32 := Get_Param_Uns32 (Inst, 0);
+               Iwd : constant Width := Get_Width (Get_Input_Net (Inst, 0));
+            begin
+               if True then
+                  Disp_Template
+                    ("  process(\i1\Si0)", Inst);
+                  Wr_Line;
+                  Wr_Line
+                    ("    variable \idx\ : integer;");
+                  Wr_Line
+                    ("  begin");
+                  Disp_Template
+                    ("    \\idx\\ := to_integer(\ui1);",
+                    Inst);
+                  Wr_Line;
+                  Disp_Template
+                    ("    if \\idx\\ <= \n0 then",
+                     Inst, (0 => Iwd - Wd - Off));
+                  Wr_Line ("");
+                  Disp_Template ("      \o0 <= \i0(\\idx\\", Inst);
+                  if Off /= 0 then
+                     Disp_Template (" + \n0", Inst, (0 => Off));
+                  end if;
+                  if Wd > 1 then
+                     Disp_Template (" + \n0 - 1 downto \\idx\\",
+                                    Inst, (0 => Wd));
+                     if Off /= 0 then
+                        Disp_Template (" + \n0", Inst, (0 => Off));
+                     end if;
+                  end if;
+                  Wr ("); -- dyn_extract");
+                  Wr_Line;
+                  Wr_Line ("    else");
+                  Disp_Template ("      \o0 <= ", Inst);
+                  if Wd = 1 then
+                     Wr ("'X'");
+                  else
+                     Wr ("(others => 'X')");
+                  end if;
+                  Wr_Line (";");
+                  Wr_Line ("    end if;");
+                  Wr_Line ("  end process;");
+               else
+                  Disp_Template ("  \o0 <= \i0", Inst);
+                  if Wd /= 0 then
+                     Disp_Template (" (to_integer (\ui1)", Inst);
+                     if Off /= 0 then
+                        Disp_Template (" + \n0", Inst, (0 => Off));
+                     end if;
+                     if Wd > 1 then
+                        Disp_Template (" + \n0 - 1 downto to_integer (\ui1)",
+                          Inst, (0 => Wd));
+                        if Off /= 0 then
+                           Disp_Template (" + \n0", Inst, (0 => Off));
+                        end if;
+                     end if;
+                     Wr (")");
+                  end if;
+                  Wr_Line (";");
+               end if;
+            end;
+         when Id_Dyn_Insert
+           | Id_Dyn_Insert_En =>
+            declare
+               --  I0: Input, I1: Value, I2: position
+               --  P0: offset
+               I0 : constant Net := Get_Input_Net (Inst, 0);
+               I1 : constant Net := Get_Input_Net (Inst, 1);
+               I2 : constant Net := Get_Input_Net (Inst, 2);
+               Iarr : constant Net_Array (0 .. 2) := (I0, I1, I2);
+               Iw : constant Width := Get_Width (Get_Input_Net (Inst, 1));
+               First : Boolean;
+            begin
+               Wr ("  process (");
+               First := True;
+               for I in Iarr'Range loop
+                  if (Get_Id (Get_Net_Parent (Iarr (I)))
+                        not in Constant_Module_Id)
+                  then
+                     if First then
+                        First := False;
+                     else
+                        Wr (", ");
+                     end if;
+                     Disp_Net_Name (Iarr (I));
+                  end if;
+               end loop;
+               Wr (")" & NL);
+               Disp_Template
+                 ("  begin" & NL &
+                  "    \o0 <= \i0;" & NL,
+                  Inst);
+               if Id = Id_Dyn_Insert_En then
+                  --  TODO: fix indentation.
+                  Disp_Template ("    if \i3 = '1' then" & NL, Inst);
+               end if;
+               Disp_Template
+                 ("    \o0 (", Inst);
+               if Iw > 1 then
+                  Disp_Template
+                    ("to_integer (\ui2) + (\sp0 + \n0)" & NL &
+                       "        downto ",
+                     Inst, (0 => Iw - 1));
+               end if;
+               Disp_Template
+                 ("to_integer (\ui2) + (\sp0))" &
+                  " <= \i1;" & NL,
+                  Inst);
+               if Id = Id_Dyn_Insert_En then
+                  Disp_Template ("    end if;" & NL, Inst);
+               end if;
+               Disp_Template
+                 ("  end process;" & NL,
+                  Inst);
+            end;
+         when Id_Const_UB32
+           | Id_Const_UL32
+           | Id_Const_Z
+           | Id_Const_X =>
+            Disp_Template ("  \o0 <= ", Inst);
+            Disp_Constant_Inline (Inst);
+            Wr_Line (";");
+         when Id_Const_Bit =>
+            null;
+         when Id_Adff
+           | Id_Iadff =>
+            Disp_Template ("  process (\ci0, \i2\Si3)" & NL &
+                           "  begin" & NL &
+                           "    if \i2 = '1' then" & NL &
+                           "      \o0 <= \i3;" & NL &
+                           "    elsif \ei0 then" & NL &
+                           "      \o0 <= \i1;" & NL &
+                           "    end if;" & NL &
+                           "  end process;" & NL, Inst);
+         when Id_Dff
+           | Id_Idff =>
+            Disp_Template ("  process (\ci0)" & NL &
+                           "  begin" & NL &
+                           "    if \ei0 then" & NL &
+                           "      \o0 <= \i1;" & NL &
+                           "    end if;" & NL &
+                             "  end process;" & NL, Inst);
+         when Id_Dlatch =>
+            Disp_Template
+              ("  \o0 <= \i0 when \fi1 = '1' else \o0;" & NL, Inst);
+         when Id_Mux2 =>
+            Disp_Template
+              ("  \o0 <= \i1 when \fi0 = '0' else \i2;" & NL, Inst);
+         when Id_Mux4 =>
+            Disp_Template ("  with \i0 select \o0 <=" & NL &
+                           "    \i1 when ""00""," & NL &
+                           "    \i2 when ""01""," & NL &
+                           "    \i3 when ""10""," & NL &
+                           "    \i4 when ""11""," & NL, Inst);
+            Wr ("    ");
+            Disp_X_Lit (Get_Width (Get_Output (Inst, 0)), 'X', False);
+            Wr_Line (" when others;");
+         when Id_Pmux =>
+            Disp_Pmux (Inst);
+         when Id_Bmux =>
+            declare
+               O : constant Net := Get_Output (Inst, 0);
+               Wd : constant Width := Get_Width (O);
+            begin
+               Disp_Template ("  \o0 <= \i0", Inst);
+               if Wd = 1 then
+                  Disp_Template (" (to_integer (\ui1));" & NL, Inst);
+               else
+                  Disp_Template
+                    (" (to_integer (\ui1) * \n0 + \n1 "
+                     & "downto to_integer (\ui1) * \n0);" & NL,
+                     Inst, (0 => Wd, 1 => Wd - 1));
+               end if;
+            end;
+         when Id_Add =>
+            if Get_Width (Get_Output (Inst, 0)) = 1 then
+               Disp_Template ("  \o0 <= \i0 xor \i1;  --  add" & NL, Inst);
+            else
+               Disp_Template ("  \o0 <= std_logic_vector (\ui0 + \ui1);" & NL,
+                              Inst);
+            end if;
+         when Id_Sub =>
+            if Get_Width (Get_Output (Inst, 0)) = 1 then
+               Disp_Template ("  \o0 <= \i0 xor \i1;  --  sub" & NL, Inst);
+            else
+               Disp_Template ("  \o0 <= std_logic_vector (\ui0 - \ui1);" & NL,
+                              Inst);
+            end if;
+         when Id_Umin =>
+            Disp_Template ("  \o0 <= \i0 when \ui0 < \ui1 else \i1;" & NL,
+                           Inst);
+         when Id_Smin =>
+            Disp_Template ("  \o0 <= \i0 when \si0 < \si1 else \i1;" & NL,
+                           Inst);
+         when Id_Umax =>
+            Disp_Template ("  \o0 <= \i0 when \ui0 > \ui1 else \i1;" & NL,
+                           Inst);
+         when Id_Smax =>
+            Disp_Template ("  \o0 <= \i0 when \si0 > \si1 else \i1;" & NL,
+                           Inst);
+         when Id_Umul =>
+            Disp_Template
+              ("  \o0 <= std_logic_vector (resize (\ui0 * \ui1, \n0));" & NL,
+               Inst, (0 => Get_Width (Get_Output (Inst, 0))));
+         when Id_Smul =>
+            Disp_Template
+              ("  \o0 <= std_logic_vector (resize (\si0 * \si1, \n0));" & NL,
+               Inst, (0 => Get_Width (Get_Output (Inst, 0))));
+         when Id_Smod =>
+            Disp_Template
+              ("  \o0 <= std_logic_vector (\si0 mod \si1);" & NL, Inst);
+         when Id_Srem =>
+            Disp_Template
+              ("  \o0 <= std_logic_vector (\si0 rem \si1);" & NL, Inst);
+         when Id_Umod =>
+            Disp_Template
+              ("  \o0 <= std_logic_vector (\ui0 mod \ui1);" & NL, Inst);
+         when Id_Sdiv =>
+            Disp_Template
+              ("  \o0 <= std_logic_vector (\si0 / \si1);" & NL, Inst);
+         when Id_Udiv =>
+            Disp_Template
+              ("  \o0 <= std_logic_vector (\ui0 / \ui1);" & NL, Inst);
+         when Id_Lsl =>
+            if Flag_Flavour_Sim then
+               Disp_Template ("  \o0 <= \i0 sll \i1;" & NL, Inst);
+            else
+               Disp_Template
+                 ("  \o0 <= std_logic_vector "
+                  & "(shift_left (\ui0, to_integer (\ui1)));" & NL, Inst);
+            end if;
+         when Id_Lsr =>
+            if Flag_Flavour_Sim then
+               Disp_Template ("  \o0 <= \i0 srl \i1;" & NL, Inst);
+            else
+               Disp_Template
+                 ("  \o0 <= std_logic_vector "
+                   & "(shift_right (\ui0, to_integer(\ui1)));" & NL, Inst);
+            end if;
+         when Id_Asr =>
+            if Flag_Flavour_Sim then
+               Disp_Template ("  \o0 <= \i0 sra \i1;" & NL, Inst);
+            else
+               Disp_Template
+                 ("  \o0 <= std_logic_vector "
+                  & "(shift_right (\si0, to_integer (\ui1)));" & NL, Inst);
+            end if;
+         when Id_Rol =>
+            Disp_Template
+              ("  \o0 <= std_logic_vector "
+                 & "(rotate_left (\ui0, to_integer (\ui1)));" & NL, Inst);
+
+         when Id_Ult =>
+            Disp_Template ("  \o0 <= '1' when \ui0 < \ui1 else '0';" & NL,
+                           Inst);
+         when Id_Ule =>
+            Disp_Template ("  \o0 <= '1' when \ui0 <= \ui1 else '0';" & NL,
+                           Inst);
+         when Id_Ugt =>
+            Disp_Template ("  \o0 <= '1' when \ui0 > \ui1 else '0';" & NL,
+                           Inst);
+         when Id_Uge =>
+            Disp_Template ("  \o0 <= '1' when \ui0 >= \ui1 else '0';" & NL,
+                           Inst);
+         when Id_Slt =>
+            Disp_Template ("  \o0 <= '1' when \si0 < \si1 else '0';" & NL,
+                           Inst);
+         when Id_Sle =>
+            Disp_Template ("  \o0 <= '1' when \si0 <= \si1 else '0';" & NL,
+                           Inst);
+         when Id_Sgt =>
+            Disp_Template ("  \o0 <= '1' when \si0 > \si1 else '0';" & NL,
+                           Inst);
+         when Id_Sge =>
+            Disp_Template ("  \o0 <= '1' when \si0 >= \si1 else '0';" & NL,
+                           Inst);
+         when Id_Eq =>
+            Disp_Template ("  \o0 <= '1' when \fi0 = \i1 else '0';" & NL,
+                           Inst);
+         when Id_Ne =>
+            Disp_Template ("  \o0 <= '1' when \fi0 /= \i1 else '0';" & NL,
+                           Inst);
+         when Id_Or =>
+            Disp_Template ("  \o0 <= \i0 or \i1;" & NL, Inst);
+         when Id_And =>
+            Disp_Template ("  \o0 <= \i0 and \i1;" & NL, Inst);
+         when Id_Xor =>
+            Disp_Template ("  \o0 <= \i0 xor \i1;" & NL, Inst);
+         when Id_Nor =>
+            Disp_Template ("  \o0 <= \i0 nor \i1;" & NL, Inst);
+         when Id_Nand =>
+            Disp_Template ("  \o0 <= \i0 nand \i1;" & NL, Inst);
+         when Id_Xnor =>
+            Disp_Template ("  \o0 <= \i0 xnor \i1;" & NL, Inst);
+
+         when Id_Concat2 =>
+            declare
+               Wd : constant Width := Get_Width (Get_Output (Inst, 0));
+            begin
+               if Wd = 1 then
+                  if Get_Width (Get_Input_Net (Inst, 0)) = 0 then
+                     Disp_Template ("  \o0 <= \i1;  --  concat" & NL, Inst);
+                  else
+                     Disp_Template ("  \o0 <= \i0;  --  concat" & NL, Inst);
+                  end if;
+               else
+                  Disp_Template ("  \o0 <= \i0 & \i1;" & NL, Inst);
+               end if;
+            end;
+         when Id_Concat3 =>
+            Disp_Template ("  \o0 <= \i0 & \i1 & \i2;" & NL, Inst);
+         when Id_Concat4 =>
+            Disp_Template ("  \o0 <= \i0 & \i1 & \i2 & \i3;" & NL, Inst);
+         when Id_Concatn =>
+            Disp_Template ("  \o0 <= \i0", Inst);
+            for I in 1 .. Get_Nbr_Inputs (Inst) - 1 loop
+               Disp_Template (" & ", Inst);
+               Disp_Net_Expr (Get_Input_Net (Inst, I), Inst, Conv_None);
+            end loop;
+            Disp_Template(";" & NL, Inst);
+         when Id_Utrunc
+           | Id_Strunc =>
+            declare
+               W : constant Width := Get_Width (Get_Output (Inst, 0));
+            begin
+               if W = 0 then
+                  --  Do not try to slice the input, as it can be a single
+                  --  wire.
+                  Disp_Template ("  \o0 <= """"", Inst);
+               else
+                  Disp_Template ("  \o0 <= \i0 ", Inst);
+                  if W = 1 then
+                     Disp_Template ("(0)", Inst);
+                  else
+                     Disp_Template ("(\n0 downto 0)", Inst, (0 => W - 1));
+                  end if;
+               end if;
+               Disp_Template (";  --  trunc" & NL, Inst);
+            end;
+         when Id_Uextend =>
+            declare
+               Ow : constant Width := Get_Width (Get_Output (Inst, 0));
+               Iw : constant Width := Get_Width (Get_Input_Net (Inst, 0));
+            begin
+               pragma Assert (Ow > Iw);
+               Disp_Template ("  \o0 <= """, Inst);
+               Wr ((1 .. Natural (Ow - Iw) => '0'));
+               Disp_Template (""" & \i0;  --  uext" & NL, Inst);
+            end;
+         when Id_Sextend =>
+            declare
+               Ow : constant Width := Get_Width (Get_Output (Inst, 0));
+               Iw : constant Width := Get_Width (Get_Input_Net (Inst, 0));
+            begin
+               pragma Assert (Ow > Iw);
+               Disp_Template ("  \o0 <= ", Inst);
+               if Iw = 1 then
+                  Disp_Template ("(\n0 downto 0 => \i0); -- sext" & NL,
+                                 Inst, (0 => Ow - 1));
+               else
+                  Disp_Template
+                    ("std_logic_vector (resize (\si0, \n0));  --  sext" & NL,
+                     Inst, (0 => Ow));
+               end if;
+            end;
+         when Id_Red_Or =>
+            declare
+               Iw : constant Width := Get_Width (Get_Input_Net (Inst, 0));
+            begin
+               if Iw > 1 then
+                  Disp_Template
+                    ("  \o0 <= '1' when \i0 /= (\n0 downto 0 => '0') else '0';"
+                       & NL, Inst, (0 => Iw - 1));
+               elsif Iw = 1 then
+                  Disp_Template
+                    ("  \o0 <= \i0; -- reduce or" & NL, Inst);
+               else
+                  Disp_Template
+                    ("  \o0 <= '0'; -- reduce or" & NL, Inst);
+               end if;
+            end;
+         when Id_Red_And =>
+            declare
+               Iw : constant Width := Get_Width (Get_Input_Net (Inst, 0));
+            begin
+               if Iw > 1 then
+                  Disp_Template
+                    ("  \o0 <= '1' when \i0 = (\n0 downto 0 => '1') else '0';"
+                       & NL, Inst, (0 => Iw - 1));
+               elsif Iw = 1 then
+                  Disp_Template
+                    ("  \o0 <= \i0; -- reduce and" & NL, Inst);
+               else
+                  Disp_Template
+                    ("  \o0 <= '1'; -- reduce and" & NL, Inst);
+               end if;
+            end;
+         when Id_Red_Xor =>
+            declare
+               Iw : constant Width := Get_Width (Get_Input_Net (Inst, 0));
+            begin
+               if Iw > 1 then
+                  Disp_Template ("  \o0 <= \i0(0)", Inst);
+                  for I in 1 .. Iw - 1 loop
+                     Disp_Template (" xor \i0(\n0)", Inst, (0 => I));
+                  end loop;
+                  Disp_Template (";" & NL, Inst);
+               elsif Iw = 1 then
+                  Disp_Template
+                    ("  \o0 <= \i0; -- reduce xor" & NL, Inst);
+               else
+                  Disp_Template
+                    ("  \o0 <= '0'; -- reduce xor" & NL, Inst);
+               end if;
+            end;
+
+         when Id_Posedge =>
+            Disp_Template
+              ("  \o0 <= '1' when rising_edge (\i0) else '0';" & NL, Inst);
+         when Id_Negedge =>
+            Disp_Template
+              ("  \o0 <= '1' when falling_edge (\i0) else '0';" & NL, Inst);
+         when Id_Tri =>
+            Disp_Template ("  \o0 <= \i1 when (\i0 = '1') else ", Inst);
+            Disp_X_Lit (Get_Width (Get_Output (Inst, 0)), 'Z', False);
+            Wr_Line (";");
+         when Id_Assert =>
+            Disp_Template
+              ("  \l0: postponed assert \i0 = '1' severity error; --  assert"
+               & NL, Inst);
+         when Id_Assume =>
+            Disp_Template
+              ("  \l0: assert \i0 = '1' severity warning; --  assume" & NL,
+               Inst);
+         when Id_Cover =>
+            Disp_Template
+              ("  \l0: assert \i0 = '1' severity note; --  cover" & NL,
+               Inst);
+         when Id_Assert_Cover =>
+            Disp_Template
+              ("  \l0: assert \i0 = '1' severity note; --  assert_cover" & NL,
+               Inst);
+         when Id_Resolver =>
+            Disp_Template
+              ("  \o0 <= \i0;" & NL, Inst);
+            Disp_Template
+              ("  \o0 <= \i1;" & NL, Inst);
+         when others =>
+            Disp_Instance_Gate (Inst);
+      end case;
+   end Disp_Instance_Inline;
+
+   function Hash_Name_Id (V : Name_Id) return Hash_Value_Type is
+   begin
+      return Hash_Value_Type (V);
+   end Hash_Name_Id;
+
+   procedure Build_Name_Id (Key : Name_Id;
+                            Obj : out Name_Id; Val : out Boolean) is
+   begin
+      Obj := Key;
+      Val := False;
+   end Build_Name_Id;
+
+   package Name_Id_Set is new Dyn_Maps
+     (Key_Type => Name_Id,
+      Object_Type => Name_Id,
+      Value_Type => Boolean,
+      Hash => Hash_Name_Id,
+      Build => Build_Name_Id,
+      Equal => "=");
+
+   --  Call Disp_Attribute_Decl only if the name of ATTR is not in MAP.
+   --  So that the attribute is declared only once.
+   procedure Disp_Attribute_Decl_Maybe
+     (Attr : Attribute; Map : in out Name_Id_Set.Instance)
+   is
+      Attr_Name : constant Name_Id := Get_Attribute_Name (Attr);
+      Name_Idx : Name_Id_Set.Index_Type;
+   begin
+      --  Maybe declare the attribute.
+      Name_Id_Set.Get_Index (Map, Attr_Name, Name_Idx);
+      if not Name_Id_Set.Get_Value (Map, Name_Idx) then
+         Disp_Attribute_Decl (Attr);
+         Name_Id_Set.Set_Value (Map, Name_Idx, True);
+      end if;
+   end Disp_Attribute_Decl_Maybe;
+
+   procedure Disp_Shift_Definition (Arith : Boolean; Right : Boolean)
+   is
+      Name : String (1 .. 3);
+   begin
+      --  Name of the operator
+      --  1. It's a shift
+      Name (1) := 's';
+      --  2. Direction
+      if Right then
+         Name (2) := 'r';
+      else
+         Name (2) := 'l';
+      end if;
+      --  3. Logical or arith.
+      if Arith then
+         Name (3) := 'a';
+      else
+         Name (3) := 'l';
+      end if;
+
+      Wr_Line;
+      Wr_Line ("  function """ & Name
+               & """ (v : std_logic_vector; sh : std_logic_vector)");
+      Wr_Line ("    return std_logic_vector");
+      Wr_Line ("  is");
+      Wr_Line ("    alias av : std_logic_vector(v'length - 1 downto 0) is v;");
+      Wr_Line ("    alias ash : std_logic_vector(sh'length - 1 downto 0) "
+               & "is sh;");
+      Wr ("    variable res : std_logic_vector(av'range) := (others => ");
+      if Arith then
+         --  TODO: if AV is a null vector ?
+         Wr ("av (av'left)");
+      else
+         Wr ("'0'");
+      end if;
+      Wr_Line (");");
+      Wr_Line ("    variable off : natural := 0;");
+      Wr_Line ("  begin");
+      Wr_Line ("    for i in ash'reverse_range loop");
+      Wr_Line ("      if ash(i) = '1' then");
+      Wr_Line ("        if i >= 31 then");
+      Wr_Line ("          --  Will overflow, the shift amount is very large!");
+      Wr_Line ("          return res;");
+      Wr_Line ("        end if;");
+      Wr_Line ("        off := off + 2**i;");
+      Wr_Line ("      end if;");
+      Wr_Line ("    end loop;");
+      Wr_Line ("    for i in av'left downto off loop");
+      if Right then
+         Wr_Line ("      res (i - off) := av (i);");
+      else
+         Wr_Line ("      res (i) := av (i - off);");
+      end if;
+      Wr_Line ("    end loop;");
+      Wr_Line ("    return res;");
+      Wr_Line ("  end """ & Name & """;");
+   end Disp_Shift_Definition;
+
+   procedure Disp_Signal (Inst : Instance; N : Net)
+   is
+      Id : constant Module_Id := Get_Id (Inst);
+   begin
+      if Id in Constant_Module_Id then
+         Wr ("  constant ");
+      else
+         Wr ("  signal ");
+      end if;
+      Disp_Net_Name (N);
+      Wr (" : ");
+      Put_Type (Get_Width (N));
+      case Id is
+         when Id_Idff =>
+            Wr (" := ");
+            Disp_Constant_Inline (Get_Net_Parent (Get_Input_Net (Inst, 2)));
+         when Id_Iadff =>
+            Wr (" := ");
+            Disp_Constant_Inline (Get_Net_Parent (Get_Input_Net (Inst, 4)));
+         when Constant_Module_Id =>
+            Wr (" := ");
+            Disp_Constant_Inline (Inst);
+         when others =>
+            null;
+      end case;
+      Wr_Line (";");
+   end Disp_Signal;
+
+   procedure Disp_Architecture_Declarations (M : Module)
+   is
+      Attr_Map, Comp_Map : Name_Id_Set.Instance;
+      Imod : Module;
+      Id : Module_Id;
+      With_Attr : Boolean;
+      Has_Lsl, Has_Lsr, Has_Asr : Boolean;
+   begin
+      Name_Id_Set.Init (Attr_Map);
+      Name_Id_Set.Init (Comp_Map);
+
+      Has_Lsl := False;
+      Has_Lsr := False;
+      Has_Asr := False;
+
+      --  Display signal declarations.
+      --  There are as many signals as gate outputs.
+      for Inst of Instances (M) loop
+         With_Attr := True;
+         Imod := Get_Module (Inst);
+         Id := Get_Id (Imod);
+         case Id is
+            when Id_Memory
+              | Id_Memory_Init =>
+               --  For memories: skip the chain.
+               With_Attr := False;
+               null;
+            when Id_Mem_Wr_Sync =>
+               --  For memories: skip the chain.
+               null;
+            when Id_Mem_Rd
+              | Id_Mem_Rd_Sync =>
+               --  For memories: skip the chain.
+               declare
+                  N : constant Net := Get_Output (Inst, 1);
+               begin
+                  Wr ("  signal ");
+                  Disp_Net_Name (N);
+                  Wr (" : ");
+                  Put_Type (Get_Width (N));
+                  Wr_Line (";");
+               end;
+            when others =>
+               if not Is_Self_Instance (Inst)
+                 and then not (Flag_Merge_Lit
+                                 and then Id in Constant_Module_Id
+                                 and then not Need_Signal (Inst))
+                 and then not (Flag_Merge_Edge
+                                 and then Id in Edge_Module_Id
+                                 and then not Need_Edge (Inst))
+               then
+                  if Locations.Get_Location (Inst) = No_Location then
+                     case Id is
+                        when Id_Const_UB32
+                           | Id_Const_SB32
+                           | Id_Const_UL32
+                           | Id_Const_Bit
+                           | Id_Const_Log
+                           | Id_Const_Z
+                           | Id_Const_X
+                           | Id_Const_0
+                           | Id_Concat2
+                           | Id_Concat3
+                           | Id_Concat4
+                           | Id_Concatn
+                           | Id_Extract =>
+                           null;
+                        when Id_Nop =>
+                           --  Used in renaming
+                           null;
+                        when others => raise Internal_Error;
+                     end case;
+                  end if;
+                  for N of Outputs_Iterate (Inst) loop
+                     if Id < Id_User_None
+                       or else not Direct_Conn_Output (Inst, N)
+                     then
+                        Disp_Signal (Inst, N);
+                     end if;
+                  end loop;
+               end if;
+         end case;
+
+         if Id >= Id_User_None
+           and then Get_Self_Instance (Imod) = No_Instance
+         then
+            --  For a blackbox, declare a component (only once).
+            declare
+               Comp_Name : constant Sname := Get_Module_Name (Imod);
+               Comp_Id : constant Name_Id := Get_Sname_Suffix (Comp_Name);
+               Comp_Idx : Name_Id_Set.Index_Type;
+            begin
+               Name_Id_Set.Get_Index (Comp_Map, Comp_Id, Comp_Idx);
+               if not Name_Id_Set.Get_Value (Comp_Map, Comp_Idx) then
+                  --  Declare the component for blackboxes.
+                  Wr ("  component ");
+                  Put_Name (Get_Module_Name (Imod));
+                  Wr_Line (" is");
+                  Disp_Generics (Imod);
+                  Disp_Ports (Imod, "  ");
+                  Wr_Line ("  end component;");
+                  Name_Id_Set.Set_Value (Comp_Map, Comp_Idx, True);
+               end if;
+            end;
+         end if;
+
+         if Flag_Flavour_Sim then
+            case Id is
+               when Id_Lsl =>
+                  Has_Lsl := True;
+               when Id_Lsr =>
+                  Has_Lsr := True;
+               when Id_Asr =>
+                  Has_Asr := True;
+               when others =>
+                  null;
+            end case;
+         end if;
+
+         if With_Attr and then Has_Instance_Attribute (Inst)
+           and then not (Flag_Merge_Lit
+                         and then Id in Constant_Module_Id
+                         and then not Need_Signal (Inst))
+         then
+            declare
+               Attrs : constant Attribute :=
+                 Get_Instance_First_Attribute (Inst);
+               Sig_Name : constant Sname := Get_Instance_Name (Inst);
+               Attr  : Attribute;
+            begin
+               Attr := Attrs;
+               while Attr /= No_Attribute loop
+                  Disp_Attribute_Decl_Maybe (Attr, Attr_Map);
+                  if Get_Id (Inst) >= Id_User_None then
+                     Disp_Attribute (Attr, Sig_Name, "label");
+                  else
+                     Disp_Attribute (Attr, Sig_Name, "signal");
+                  end if;
+                  Attr := Get_Attribute_Next (Attr);
+               end loop;
+            end;
+         end if;
+      end loop;
+
+      Name_Id_Set.Free (Attr_Map);
+      Name_Id_Set.Free (Comp_Map);
+
+      if Has_Lsl then
+         Disp_Shift_Definition (False, False);
+      end if;
+      if Has_Lsr then
+         Disp_Shift_Definition (False, True);
+      end if;
+      if Has_Asr then
+         Disp_Shift_Definition (True, True);
+      end if;
+   end Disp_Architecture_Declarations;
+
+   procedure Disp_Architecture_Statements (M : Module)
+   is
+      Self_Inst : constant Instance := Get_Self_Instance (M);
+   begin
+      --  Output assignments.
+      declare
+         Idx : Port_Idx;
+      begin
+         Idx := 0;
+         for I of Inputs (Self_Inst) loop
+            if not Direct_Conn_Input (I) then
+               Wr ("  ");
+               Put_Name (Get_Output_Desc (M, Idx).Name);
+               Wr (" <= ");
+               Disp_Net_Name (Get_Driver (I));
+               Wr_Line (";");
+            end if;
+            Idx := Idx + 1;
+         end loop;
+      end;
+
+      for Inst of Instances (M) loop
+         case Get_Id (Inst) is
+            when Constant_Module_Id =>
+               if not Flag_Merge_Lit then
+                  Disp_Instance_Inline (Inst);
+               end if;
+            when Edge_Module_Id =>
+               if (not Flag_Merge_Edge) or else Need_Edge (Inst) then
+                  Disp_Instance_Inline (Inst);
+               end if;
+            when others =>
+               Disp_Instance_Inline (Inst);
+         end case;
+      end loop;
+   end Disp_Architecture_Statements;
+
+   procedure Disp_Architecture (M : Module)
+   is
+      Self_Inst : constant Instance := Get_Self_Instance (M);
+   begin
+      if Self_Inst = No_Instance then
+         --  Not defined.
+         return;
+      end if;
+
+      Wr ("architecture rtl of ");
+      Put_Name (Get_Module_Name (M));
+      Wr_Line (" is");
+
+      --  Dummy display:
+      --  * generate one signal per net
+      --  * generate instances
+
+      Disp_Architecture_Declarations (M);
+
+      Wr_Line ("begin");
+
+      Disp_Architecture_Statements (M);
+
+      Wr_Line ("end rtl;");
+      Wr_Line;
+   end Disp_Architecture;
+
+   procedure Disp_Port_Attributes
+     (Attrs : Attribute; Name : Sname; Map : in out Name_Id_Set.Instance)
+   is
+      Attr  : Attribute;
+   begin
+      Attr := Attrs;
+      while Attr /= No_Attribute loop
+         Disp_Attribute_Decl_Maybe (Attr, Map);
+         Disp_Attribute (Attr, Name, "signal");
+         Attr := Get_Attribute_Next (Attr);
+      end loop;
+   end Disp_Port_Attributes;
+
+   procedure Disp_Entity_Ports_And_Attributes
+     (M : Module; Map : in out Name_Id_Set.Instance)
+   is
+      Attrs : Attribute;
+   begin
+      Disp_Ports (M, "");
+
+      for I in 1 .. Get_Nbr_Inputs (M) loop
+         Attrs := Get_Input_Port_First_Attribute (M, I - 1);
+         if Attrs /= No_Attribute then
+            Disp_Port_Attributes (Attrs, Get_Input_Desc (M, I - 1).Name, Map);
+         end if;
+      end loop;
+      for I in 1 .. Get_Nbr_Outputs (M) loop
+         Attrs := Get_Output_Port_First_Attribute (M, I - 1);
+         if Attrs /= No_Attribute then
+            Disp_Port_Attributes (Attrs, Get_Output_Desc (M, I - 1).Name, Map);
+         end if;
+      end loop;
+   end Disp_Entity_Ports_And_Attributes;
+
+   procedure Disp_Entity (M : Module)
+   is
+      Self : constant Instance := Get_Self_Instance (M);
+      Name : constant Sname := Get_Module_Name (M);
+      Map : Name_Id_Set.Instance;
+   begin
+      Name_Id_Set.Init (Map);
+
+      --  Module id and name.
+      Wr_Line ("library ieee;");
+      Wr_Line ("use ieee.std_logic_1164.all;");
+      Wr_Line ("use ieee.numeric_std.all;");
+      Wr_Line;
+      Wr ("entity ");
+      Put_Name (Name);
+      Wr_Line (" is");
+
+      Disp_Generics (M);
+
+      Disp_Entity_Ports_And_Attributes (M, Map);
+
+      if Has_Instance_Attribute (Self) then
+         declare
+            Attr  : Attribute;
+         begin
+            Attr := Get_Instance_First_Attribute (Self);
+            while Attr /= No_Attribute loop
+               Disp_Attribute_Decl_Maybe (Attr, Map);
+               Disp_Attribute (Attr, Name, "entity");
+               Attr := Get_Attribute_Next (Attr);
+            end loop;
+         end;
+      end if;
+
+      Wr ("end entity ");
+      Put_Name (Get_Module_Name (M));
+      Wr_Line (";");
+      Wr_Line;
+
+      Name_Id_Set.Free (Map);
+   end Disp_Entity;
+
+   type Module_Array is array (Natural range <>) of Module;
+   type Flag_Array is array (Module range <>) of Boolean;
+
+   procedure Order_Modules (Modules : in out Module_Array;
+                            Flags : in out Flag_Array;
+                            Pos : in out Natural;
+                            M : Module)
+   is
+      Sub : Module;
+      Inst : Instance;
+   begin
+      Inst := Get_First_Instance (M);
+      while Inst /= No_Instance loop
+         Sub := Get_Module (Inst);
+         if Get_Id (Sub) >= Id_User_None
+           and then not Flags (Sub)
+         then
+            Flags (Sub) := True;
+            Order_Modules (Modules, Flags, Pos, Sub);
+         end if;
+         Inst := Get_Next_Instance (Inst);
+      end loop;
+      Pos := Pos + 1;
+      Modules (Pos) := M;
+   end Order_Modules;
+
+   procedure Disp_Vhdl (M : Module) is
+   begin
+      Disp_Entity (M);
+      Disp_Architecture (M);
+   end Disp_Vhdl;
+
+   --  Disp sub-units (in reverse order).
+   procedure Disp_Vhdl_Submodules (Top : Module)
+   is
+      First : constant Module := No_Module;
+      Last : constant Module := Get_Last_Module;
+
+      Modules : Module_Array (1 .. Natural (Last - First + 1));
+      Flags : Flag_Array (First .. Last) := (others => False);
+      Pos : Natural := 0;
+   begin
+      Order_Modules (Modules, Flags, Pos, Top);
+
+      for I in 1 .. Pos - 1 loop
+         --  Skip blackboxes.
+         if Get_Self_Instance (Modules (I)) /= No_Instance then
+            Disp_Vhdl (Modules (I));
+         end if;
+      end loop;
+   end Disp_Vhdl_Submodules;
+
+   procedure Disp_Vhdl_Hierarchy (Top : Module)
+   is
+      Main : constant Module := Extract_Main_User_Module (Top);
+   begin
+      Disp_Vhdl_Submodules (Main);
+      Disp_Vhdl (Main);
+   end Disp_Vhdl_Hierarchy;
+end Netlists.Disp_Vhdl;

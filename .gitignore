@@ -1,0 +1,22 @@
+# Build artifacts
+*.o
+*.ali
+*.d
+*.a
+*.so
+*.stdout
+*.stderr
+b__*.adb
+b__*.ads
+ghdl
+ghdl_jit
+ghdl_wasm
+*.bexch
+
+# Generated files (keep ortho_wasm.ads since we maintain it)
+/lib/
+
+# Temp / editor
+*.swp
+*~
+.DS_Store
