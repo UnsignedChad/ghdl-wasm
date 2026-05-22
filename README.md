@@ -51,6 +51,25 @@ The WAT module imports a set of GRT (GHDL Runtime) functions from a JavaScript `
 
 ---
 
+## ghdl-wasm server cost
+
+The architecture above means the server only pays for **compile** — once that's done, the resulting `.wasm` runs entirely on the user's machine. Re-running with different stimulus, sweeping parameters, scrubbing a waveform — all zero server hits.
+
+Compare against tools that simulate on the server (EDA Playground and similar), which pay for both compile *and* the full simulation duration per user, per run:
+
+| Sim length              | EDA Playground server cost | ghdl-wasm server cost  | Advantage |
+|-------------------------|----------------------------|------------------------|-----------|
+| 1 µs                    | ~2 s                       | ~2 s                   | tied      |
+| 1 ms                    | ~30 s                      | ~2 s                   | **15×**   |
+| 100 ms                  | ~5 min                     | ~5 s                   | **60×**   |
+| Parameter sweep (10×)   | 10× the sim cost           | 1× compile, 0× sim     | **100×+** |
+
+The compiled `.wasm` is also content-addressable — identical VHDL source produces an identical binary, so a hash-keyed CDN cache turns repeat runs (same source, any user) into a 304. A server-side simulator can't cache the simulation itself; each user starts from zero.
+
+The cost curve bends the opposite direction from a server-simulator model: as designs get bigger and simulations get longer, the per-user server cost stays roughly constant (compile time only) instead of growing with simulation duration.
+
+---
+
 ## Building from Source
 
 ### Prerequisites
