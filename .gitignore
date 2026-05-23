@@ -90,3 +90,8 @@ coverage.xml
 
 # IntelliJ project files
 /.idea/workspace.xml
+
+# WASM build outputs
+src/ortho/wasm/build/
+*.wat
+*.wasm
