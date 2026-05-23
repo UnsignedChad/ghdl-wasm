@@ -126,6 +126,11 @@ package body Ortho_Wasm is
       Is_Public : Boolean := False;
       --  WAT parameter list for Dk_Func entries, built by New_Interface_Decl
       Params    : Ada.Strings.Unbounded.Unbounded_String;
+      --  Phase 6: snapshot of Params taken when Start_Subprogram_Body moves
+      --  the live params out, so we still have a signature for stubbing
+      --  bodyless declarations at Finish time.
+      Saved_Params : Ada.Strings.Unbounded.Unbounded_String;
+      Has_Body     : Boolean := False;
    end record;
 
    --  One big string buffer for all declaration names (avoids per-entry alloc)
@@ -194,7 +199,9 @@ package body Ortho_Wasm is
                             Name_Off => Off,
                             Name_Len => Nam'Length,
                             Is_Public => False,
-                            Params    => Ada.Strings.Unbounded.Null_Unbounded_String);
+                            Params    => Ada.Strings.Unbounded.Null_Unbounded_String,
+                            Saved_Params => Ada.Strings.Unbounded.Null_Unbounded_String,
+                            Has_Body => False);
       return O_Dnode (Decls_Top);
    end New_Decl;
 
@@ -300,6 +307,11 @@ package body Ortho_Wasm is
    Funcs_Buf           : Unbounded_String;
    --  Phase 4: accumulator for (export ...) lines, flushed in Finish.
    Exports_Buf : Ada.Strings.Unbounded.Unbounded_String;
+   --  Phase 5: function-pointer table. New_Subprogram_Address returns the
+   --  ortho function index, which the host JS must turn back into a real
+   --  callable. We emit a (table) + (elem) section keyed on the same index.
+   Elem_Buf      : Ada.Strings.Unbounded.Unbounded_String;
+   Max_Body_Idx  : Natural := 0;
    Pending_Func_Params : Unbounded_String;
    Pending_Call_Args   : Unbounded_String;
    Debug_Func_Count    : Natural := 0;
@@ -676,10 +688,49 @@ package body Ortho_Wasm is
    end Init;
 
    procedure Finish is
+      MaxImg : constant String := Natural'Image (Max_Body_Idx + 1);
+      MaxTrim : constant String := MaxImg (MaxImg'First + 1 .. MaxImg'Last);
    begin
       --  Emit globals before functions so wat2wasm can resolve forward refs.
       Put (To_String (Globals_Buf));
       Put (To_String (Funcs_Buf));
+      --  Phase 5: emit the function-pointer table. Size = Max_Body_Idx + 1.
+      Put_Line ("  (table $__T " & MaxTrim & " funcref)");
+      Put_Line ("  (export ""__indirect_function_table"" (table $__T))");
+      Put (To_String (Elem_Buf));
+      --  Phase 6: emit empty stub bodies for any function that was declared
+      --  but whose body was never translated. The synth-based simulator skips
+      --  configuration bodies (default DEFAULT_CONFIG), and there may be other
+      --  declared-only functions referenced from elab code.
+      for I in 1 .. Decls_Top loop
+         if Decls (I).Kind = Dk_Func
+           and then not Decls (I).Has_Body
+           and then Decls (I).Name_Len > 0
+         then
+            declare
+               Nm : constant String :=
+                 Ident_Buf (Decls (I).Name_Off
+                          .. Decls (I).Name_Off + Decls (I).Name_Len - 1);
+               --  If the name matches one of the imports we ALREADY declared
+               --  in Init (anything starting with "__ghdl_"), skip — emitting a
+               --  func with the same name as an import is a wat2wasm error.
+            begin
+               if Nm'Length < 7 or else Nm (Nm'First .. Nm'First + 6) /= "__ghdl_" then
+                  Put ("  (func $" & Nm
+                       & To_String (Decls (I).Params)
+                       & To_String (Decls (I).Saved_Params));
+                  if Decls (I).Tnode /= 0 then
+                     Put (" (result " & Wat_Type_Of (Decls (I).Tnode) & ")");
+                  end if;
+                  Put_Line ("");
+                  if Decls (I).Tnode /= 0 then
+                     Put_Line ("    (unreachable)");
+                  end if;
+                  Put_Line ("  )");
+               end if;
+            end;
+         end if;
+      end loop;
       --  Phase 4: flush export declarations gathered during translation.
       Put (To_String (Exports_Buf));
       Put_Line (")");
@@ -1204,7 +1255,9 @@ package body Ortho_Wasm is
                             Idx => Func_Count, Name_Off => Off,
                             Name_Len => Nam'Length,
                             Is_Public => Public,
-                            Params => Ada.Strings.Unbounded.Null_Unbounded_String);
+                            Params => Ada.Strings.Unbounded.Null_Unbounded_String,
+                            Saved_Params => Ada.Strings.Unbounded.Null_Unbounded_String,
+                            Has_Body => False);
       Interfaces := (Func => O_Dnode (Decls_Top));
    end Start_Function_Decl;
 
@@ -1249,6 +1302,7 @@ package body Ortho_Wasm is
                     Params    => Decls (Natural (Func)).Params,
                     Locals    => Null_Unbounded_String,
                     Body_Buf  => Null_Unbounded_String);
+      Decls (Natural (Func)).Saved_Params := Decls (Natural (Func)).Params;
       Decls (Natural (Func)).Params := Null_Unbounded_String;
       Indent := 4;
    end Start_Subprogram_Body;
@@ -1327,6 +1381,20 @@ package body Ortho_Wasm is
       end if;
       In_Func := False;
       Indent  := 2;
+      Decls (Natural (Pending_Decl_Idx)).Has_Body := True;
+      --  Phase 5: record this body in the function-pointer table so the
+      --  host can resolve indices returned by New_Subprogram_Address.
+      declare
+         Idx : constant Natural := Decls (Natural (Pending_Decl_Idx)).Idx;
+         IdxImg : constant String := Natural'Image (Idx);
+         IdxTrim : constant String := IdxImg (IdxImg'First + 1 .. IdxImg'Last);
+      begin
+         Append (Elem_Buf,
+                 "  (elem (i32.const " & IdxTrim & ") $" & Nam & ")" & ASCII.LF);
+         if Idx > Max_Body_Idx then
+            Max_Body_Idx := Idx;
+         end if;
+      end;
       --  Phase 4: emit a (export ...) line for public functions so a
       --  host can drive elaboration and access process entry points.
       if Decls (Natural (Pending_Decl_Idx)).Is_Public then
