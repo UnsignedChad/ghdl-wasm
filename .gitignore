@@ -95,3 +95,5 @@ coverage.xml
 src/ortho/wasm/build/
 *.wat
 *.wasm
+ghdl_wasm
+grt-readline.ads
