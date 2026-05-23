@@ -120,8 +120,12 @@ package body Ortho_Wasm is
       --  Name stored in Ident_Buf, length in Name_Len
       Name_Off : Natural := 0;
       Name_Len : Natural := 0;
+      --  True when the function was declared with O_Storage_Public; we
+      --  emit a (export "<name>" (func $<name>)) line for each such
+      --  function at module-finish time.
+      Is_Public : Boolean := False;
       --  WAT parameter list for Dk_Func entries, built by New_Interface_Decl
-      Params   : Ada.Strings.Unbounded.Unbounded_String;
+      Params    : Ada.Strings.Unbounded.Unbounded_String;
    end record;
 
    --  One big string buffer for all declaration names (avoids per-entry alloc)
@@ -189,7 +193,8 @@ package body Ortho_Wasm is
                             Idx      => Idx,
                             Name_Off => Off,
                             Name_Len => Nam'Length,
-                            Params   => Ada.Strings.Unbounded.Null_Unbounded_String);
+                            Is_Public => False,
+                            Params    => Ada.Strings.Unbounded.Null_Unbounded_String);
       return O_Dnode (Decls_Top);
    end New_Decl;
 
@@ -293,6 +298,8 @@ package body Ortho_Wasm is
    --  that every (global.get $X) follows the global's declaration (wat2wasm
    --  is single-pass and rejects forward refs otherwise).
    Funcs_Buf           : Unbounded_String;
+   --  Phase 4: accumulator for (export ...) lines, flushed in Finish.
+   Exports_Buf : Ada.Strings.Unbounded.Unbounded_String;
    Pending_Func_Params : Unbounded_String;
    Pending_Call_Args   : Unbounded_String;
    Debug_Func_Count    : Natural := 0;
@@ -309,6 +316,9 @@ package body Ortho_Wasm is
 
    Cur_Func : Func_State;
    In_Func  : Boolean := False;
+   --  Phase 4: index of the function whose body is currently being
+   --  emitted, so Finish_Subprogram_Body can look up its Is_Public flag.
+   Pending_Decl_Idx : O_Dnode := 0;
    Indent   : Natural := 2;
 
    function Cur_Func_Name return String is
@@ -668,7 +678,8 @@ package body Ortho_Wasm is
       --  Emit globals before functions so wat2wasm can resolve forward refs.
       Put (To_String (Globals_Buf));
       Put (To_String (Funcs_Buf));
-      --  Export the canonical entry point so a host can drive elaboration.
+      --  Phase 4: flush export declarations gathered during translation.
+      Put (To_String (Exports_Buf));
       Put_Line (")");
    end Finish;
 
@@ -1172,9 +1183,17 @@ package body Ortho_Wasm is
    procedure Start_Function_Decl (Interfaces : out O_Inter_List;
                                   Ident : O_Ident; Storage : O_Storage;
                                   Rtype : O_Tnode) is
-      pragma Unreferenced (Storage);
       Nam : constant String := Get_String (Ident);
       Off : constant Natural := Store_Name (Nam);
+      --  Phase 4: also export any user-design function. The translation
+      --  layer marks user processes O_Storage_Private but the browser-
+      --  side runtime needs to invoke them, so we override here. Names
+      --  starting with 'work__' are the design's own code (testbench,
+      --  RTL processes, etc.); everything else only exports if Storage
+      --  is explicitly Public.
+      Public : constant Boolean :=
+        Storage = O_Storage_Public
+        or else (Nam'Length >= 6 and then Nam (Nam'First .. Nam'First + 5) = "work__");
    begin
       Pending_Func_Params := Null_Unbounded_String;
       Decls_Top  := Decls_Top + 1;
@@ -1182,6 +1201,7 @@ package body Ortho_Wasm is
       Decls (Decls_Top) := (Kind => Dk_Func, Tnode => Rtype,
                             Idx => Func_Count, Name_Off => Off,
                             Name_Len => Nam'Length,
+                            Is_Public => Public,
                             Params => Ada.Strings.Unbounded.Null_Unbounded_String);
       Interfaces := (Func => O_Dnode (Decls_Top));
    end Start_Function_Decl;
@@ -1216,6 +1236,7 @@ package body Ortho_Wasm is
 
    procedure Start_Subprogram_Body (Func : O_Dnode) is
    begin
+      Pending_Decl_Idx := Func;
       In_Func   := True;
       Exprs_Top := 0;
       Lvals_Top := 0;
@@ -1304,6 +1325,19 @@ package body Ortho_Wasm is
       end if;
       In_Func := False;
       Indent  := 2;
+      --  Phase 4: emit a (export ...) line for public functions so a
+      --  host can drive elaboration and access process entry points.
+      if Decls (Natural (Pending_Decl_Idx)).Is_Public then
+         declare
+            Nm : constant String :=
+              Ident_Buf (Decls (Natural (Pending_Decl_Idx)).Name_Off
+                       .. Decls (Natural (Pending_Decl_Idx)).Name_Off
+                            + Decls (Natural (Pending_Decl_Idx)).Name_Len - 1);
+         begin
+            Append (Exports_Buf,
+                    "  (export """ & Nm & """ (func $" & Nm & "))" & ASCII.LF);
+         end;
+      end if;
    end Finish_Subprogram_Body;
 
    ---------------------------------------------------------------------------
