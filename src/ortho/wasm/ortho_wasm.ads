@@ -13,6 +13,7 @@
 
 with Interfaces; use Interfaces;
 with Ortho_Ident; use Ortho_Ident;
+with Ada.Strings.Unbounded;
 
 pragma Style_Checks (Off);
 package Ortho_Wasm is
@@ -535,7 +536,10 @@ private
       Depth : Natural := 0;
    end record;
    type O_Case_Block is record
-      Depth : Natural := 0;
+      Depth        : Natural := 0;
+      Value_Expr   : Ada.Strings.Unbounded.Unbounded_String;
+      Label_Idx    : Natural := 0;
+      Has_Open_Arm : Boolean := False;
    end record;
 
 end Ortho_Wasm;

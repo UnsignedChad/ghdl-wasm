@@ -8,6 +8,7 @@
 
 with Interfaces; use Interfaces;
 with Ortho_Ident; use Ortho_Ident;
+with Ada.Strings.Unbounded;
 
 package Ortho_Wasm is
    --  Initialise the WAT module builder (called once before any translation).
@@ -66,8 +67,13 @@ private
    type O_If_Block is record
       Depth : Natural := 0;
    end record;
+
+   -- Phase 4b additions: capture case-value text + per-statement label
    type O_Case_Block is record
-      Depth : Natural := 0;
+      Depth        : Natural := 0;
+      Value_Expr   : Ada.Strings.Unbounded.Unbounded_String;
+      Label_Idx    : Natural := 0;
+      Has_Open_Arm : Boolean := False;
    end record;
 
 end Ortho_Wasm;

@@ -319,6 +319,8 @@ package body Ortho_Wasm is
    --  Phase 4: index of the function whose body is currently being
    --  emitted, so Finish_Subprogram_Body can look up its Is_Public flag.
    Pending_Decl_Idx : O_Dnode := 0;
+   --  Phase 4b: monotonic counter for unique case-block labels
+   Case_Counter : Natural := 0;
    Indent   : Natural := 2;
 
    function Cur_Func_Name return String is
@@ -1440,10 +1442,35 @@ package body Ortho_Wasm is
    procedure New_Next_Stmt (L : O_Snode) is
    begin Emit_Ln ("(br $loop" & Img (Natural (L)) & ")"); end New_Next_Stmt;
 
+   --  Phase 4b: real case-statement compilation.
+   --  Wrapper structure:
+   --     (block $case_end_N
+   --       (if (i32.eq <value> <choice0>) (then ...body... (br $case_end_N)))
+   --       (if (i32.eq <value> <choice1>) (then ...body... (br $case_end_N)))
+   --       ...default body emitted unconditionally as last arm...
+   --     )
+   --  Each (if ...) closes itself once the next arm starts (or the case ends),
+   --  via Close_Open_Arm.
+
+   procedure Close_Open_Arm (Block : in out O_Case_Block) is
+   begin
+      if Block.Has_Open_Arm then
+         Emit_Ln ("(br $case_end_" & Img (Block.Label_Idx) & ")");
+         Indent := Indent - 4;
+         Emit_Ln ("))");
+         Block.Has_Open_Arm := False;
+      end if;
+   end Close_Open_Arm;
+
    procedure Start_Case_Stmt (Block : in out O_Case_Block; Value : O_Enode) is
    begin
-      Emit_Ln (";; case " & Expr_S (Value) & " {");
-      Block := (Depth => Indent);
+      Case_Counter := Case_Counter + 1;
+      Block := (Depth        => Indent,
+                Value_Expr   => Ada.Strings.Unbounded.To_Unbounded_String
+                                  (Expr_S (Value)),
+                Label_Idx    => Case_Counter,
+                Has_Open_Arm => False);
+      Emit_Ln ("(block $case_end_" & Img (Case_Counter));
       Indent := Indent + 2;
    end Start_Case_Stmt;
 
@@ -1451,18 +1478,45 @@ package body Ortho_Wasm is
       pragma Unreferenced (Block); begin null; end Start_Choice;
 
    procedure New_Expr_Choice (Block : in out O_Case_Block; Expr : O_Cnode) is
-      pragma Unreferenced (Block);
    begin
-      Emit_Ln (";; when " & I64_Img (Cnodes (Natural (Expr)).Val));
+      Close_Open_Arm (Block);
+      Emit_Ln ("(if (i32.eq "
+               & Ada.Strings.Unbounded.To_String (Block.Value_Expr)
+               & " (i32.const " & I64_Img (Cnodes (Natural (Expr)).Val) & "))");
+      Emit_Ln ("  (then");
+      Indent := Indent + 4;
+      Block.Has_Open_Arm := True;
    end New_Expr_Choice;
 
    procedure New_Range_Choice (Block : in out O_Case_Block; Low, High : O_Cnode) is
-      pragma Unreferenced (Block, Low, High); begin null; end New_Range_Choice;
+   begin
+      Close_Open_Arm (Block);
+      Emit_Ln ("(if (i32.and (i32.ge_s "
+               & Ada.Strings.Unbounded.To_String (Block.Value_Expr)
+               & " (i32.const " & I64_Img (Cnodes (Natural (Low)).Val) & "))");
+      Emit_Ln ("              (i32.le_s "
+               & Ada.Strings.Unbounded.To_String (Block.Value_Expr)
+               & " (i32.const " & I64_Img (Cnodes (Natural (High)).Val) & ")))");
+      Emit_Ln ("  (then");
+      Indent := Indent + 4;
+      Block.Has_Open_Arm := True;
+   end New_Range_Choice;
+
    procedure New_Default_Choice (Block : in out O_Case_Block) is
-      pragma Unreferenced (Block); begin null; end New_Default_Choice;
+   begin
+      Close_Open_Arm (Block);
+      --  Default body emits unconditionally; no wrap. Should be the last arm.
+      Block.Has_Open_Arm := False;
+   end New_Default_Choice;
+
    procedure Finish_Choice (Block : in out O_Case_Block) is
       pragma Unreferenced (Block); begin null; end Finish_Choice;
+
    procedure Finish_Case_Stmt (Block : in out O_Case_Block) is
-   begin Indent := Block.Depth; Emit_Ln (";; }"); end Finish_Case_Stmt;
+   begin
+      Close_Open_Arm (Block);
+      Indent := Block.Depth;
+      Emit_Ln (")");
+   end Finish_Case_Stmt;
 
 end Ortho_Wasm;
