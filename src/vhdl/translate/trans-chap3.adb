@@ -14,6 +14,7 @@
 --  You should have received a copy of the GNU General Public License
 --  along with this program.  If not, see <gnu.org/licenses>.
 
+with Ada.Text_IO;
 with Name_Table;
 with Vhdl.Errors; use Vhdl.Errors;
 with Vhdl.Utils; use Vhdl.Utils;
@@ -229,6 +230,9 @@ package body Trans.Chap3 is
       Interface_List : O_Inter_List;
       Ident          : O_Ident;
    begin
+      Ada.Text_IO.Put_Line (Ada.Text_IO.Standard_Error,
+         "CBSD: start kind=");
+      Ada.Text_IO.Flush (Ada.Text_IO.Standard_Error);
       case Kind is
          when Mode_Value =>
             Ident := Create_Identifier (Name, "_BUILDER");
@@ -237,13 +241,21 @@ package body Trans.Chap3 is
       end case;
       --  FIXME: return the same type as its first parameter ???
       Start_Procedure_Decl (Interface_List, Ident, Global_Storage);
+      Ada.Text_IO.Put_Line (Ada.Text_IO.Standard_Error, "CBSD: after Start_Procedure_Decl");
+      Ada.Text_IO.Flush (Ada.Text_IO.Standard_Error);
       Subprgs.Add_Subprg_Instance_Interfaces
         (Interface_List, Info.B.Builder (Kind).Builder_Instance);
+      Ada.Text_IO.Put_Line (Ada.Text_IO.Standard_Error, "CBSD: after Add_Subprg_Instance_Interfaces");
+      Ada.Text_IO.Flush (Ada.Text_IO.Standard_Error);
       New_Interface_Decl
         (Interface_List, Info.B.Builder (Kind).Builder_Layout_Param,
          Get_Identifier ("layout_ptr"), Info.B.Layout_Ptr_Type);
+      Ada.Text_IO.Put_Line (Ada.Text_IO.Standard_Error, "CBSD: after New_Interface_Decl");
+      Ada.Text_IO.Flush (Ada.Text_IO.Standard_Error);
       Finish_Subprogram_Decl
         (Interface_List, Info.B.Builder (Kind).Builder_Proc);
+      Ada.Text_IO.Put_Line (Ada.Text_IO.Standard_Error, "CBSD: done");
+      Ada.Text_IO.Flush (Ada.Text_IO.Standard_Error);
    end Create_Builder_Subprogram_Decl;
 
    procedure Gen_Call_Type_Builder
@@ -350,10 +362,14 @@ package body Trans.Chap3 is
 
       False_Node, True_Node : O_Cnode;
    begin
+      Ada.Text_IO.Put_Line (Ada.Text_IO.Standard_Error, "CHAP3: New_Boolean_Type");
+      Ada.Text_IO.Flush (Ada.Text_IO.Standard_Error);
       New_Boolean_Type
         (Info.Ortho_Type (Mode_Value),
          Translate_Enumeration_Literal (False_Lit), False_Node,
          Translate_Enumeration_Literal (True_Lit), True_Node);
+      Ada.Text_IO.Put_Line (Ada.Text_IO.Standard_Error, "CHAP3: Finish_Type_Definition");
+      Ada.Text_IO.Flush (Ada.Text_IO.Standard_Error);
       Info.Type_Mode := Type_Mode_B1;
       Set_Ortho_Literal (False_Lit, False_Node);
       Set_Ortho_Literal (True_Lit, True_Node);
@@ -361,6 +377,8 @@ package body Trans.Chap3 is
       Info.S.Nocheck_Hi := True;
       Info.B.Align := Align_8;
       Finish_Type_Definition (Info);
+      Ada.Text_IO.Put_Line (Ada.Text_IO.Standard_Error, "CHAP3: Translate_Bool_Type done");
+      Ada.Text_IO.Flush (Ada.Text_IO.Standard_Error);
    end Translate_Bool_Type;
 
    ---------------
@@ -1147,16 +1165,31 @@ package body Trans.Chap3 is
       El_Size    : O_Enode;
       Size       : O_Enode;
    begin
+      Ada.Text_IO.Put_Line (Ada.Text_IO.Standard_Error,
+         "CATB: start builder");
+      Ada.Text_IO.Flush (Ada.Text_IO.Standard_Error);
       Start_Subprogram_Body (Info.B.Builder (Kind).Builder_Proc);
+      Ada.Text_IO.Put_Line (Ada.Text_IO.Standard_Error, "CATB: after start_subprogram_body");
+      Ada.Text_IO.Flush (Ada.Text_IO.Standard_Error);
       Subprgs.Start_Subprg_Instance_Use
         (Info.B.Builder (Kind).Builder_Instance);
+      Ada.Text_IO.Put_Line (Ada.Text_IO.Standard_Error, "CATB: after start_subprg_instance_use");
+      Ada.Text_IO.Flush (Ada.Text_IO.Standard_Error);
       Open_Local_Temp;
+      Ada.Text_IO.Put_Line (Ada.Text_IO.Standard_Error, "CATB: after open_local_temp");
+      Ada.Text_IO.Flush (Ada.Text_IO.Standard_Error);
 
       Layout := Dp2M (Layout_Param, Info, Kind,
                       Info.B.Layout_Type, Info.B.Layout_Ptr_Type);
+      Ada.Text_IO.Put_Line (Ada.Text_IO.Standard_Error,
+         "CATB: dp2m done el_info_null=" &
+         Boolean'Image (El_Info = null));
+      Ada.Text_IO.Flush (Ada.Text_IO.Standard_Error);
 
       --  Call the builder to layout the element (only for unbounded elements)
       if Is_Unbounded_Type (El_Info) then
+         Ada.Text_IO.Put_Line (Ada.Text_IO.Standard_Error, "CATB: unbounded path");
+         Ada.Text_IO.Flush (Ada.Text_IO.Standard_Error);
          Gen_Call_Type_Builder
            (Array_Layout_To_Element_Layout (Layout, Def), El_Type, Kind);
 
@@ -1164,19 +1197,29 @@ package body Trans.Chap3 is
            (Layout_To_Size (Array_Layout_To_Element_Layout (Layout, Def),
                             Kind));
       else
+         Ada.Text_IO.Put_Line (Ada.Text_IO.Standard_Error, "CATB: bounded path");
+         Ada.Text_IO.Flush (Ada.Text_IO.Standard_Error);
          El_Size := Get_Subtype_Size (El_Type, Mnode_Null, Kind);
+         Ada.Text_IO.Put_Line (Ada.Text_IO.Standard_Error, "CATB: got el_size");
+         Ada.Text_IO.Flush (Ada.Text_IO.Standard_Error);
       end if;
 
       --  Compute size.
+      Ada.Text_IO.Put_Line (Ada.Text_IO.Standard_Error, "CATB: computing size");
+      Ada.Text_IO.Flush (Ada.Text_IO.Standard_Error);
       Size := New_Dyadic_Op
         (ON_Mul_Ov,
          El_Size,
          Get_Bounds_Length (Layout_To_Bounds (Layout), Def));
+      Ada.Text_IO.Put_Line (Ada.Text_IO.Standard_Error, "CATB: new_assign_stmt");
+      Ada.Text_IO.Flush (Ada.Text_IO.Standard_Error);
 
       --  Set size.
       New_Assign_Stmt (Layout_To_Size (Layout, Kind), Size);
 
       Close_Local_Temp;
+      Ada.Text_IO.Put_Line (Ada.Text_IO.Standard_Error, "CATB: close_local_temp done");
+      Ada.Text_IO.Flush (Ada.Text_IO.Standard_Error);
 
       Subprgs.Finish_Subprg_Instance_Use
         (Info.B.Builder (Kind).Builder_Instance);
@@ -2486,12 +2529,22 @@ package body Trans.Chap3 is
 
       Info := Add_Info (Def, Kind_Type);
 
+      Ada.Text_IO.Put_Line (Ada.Text_IO.Standard_Error, "CHAP3: before Translate_Bool_Type");
+      Ada.Text_IO.Flush (Ada.Text_IO.Standard_Error);
       Translate_Bool_Type (Def);
+      Ada.Text_IO.Put_Line (Ada.Text_IO.Standard_Error, "CHAP3: after Translate_Bool_Type");
+      Ada.Text_IO.Flush (Ada.Text_IO.Standard_Error);
 
       --  This is usually done in translate_type_definition, but boolean
       --  types are not handled by translate_type_definition.
+      Ada.Text_IO.Put_Line (Ada.Text_IO.Standard_Error, "CHAP3: before Create_Scalar_Type_Range_Type");
+      Ada.Text_IO.Flush (Ada.Text_IO.Standard_Error);
       Create_Scalar_Type_Range_Type (Def, True);
+      Ada.Text_IO.Put_Line (Ada.Text_IO.Standard_Error, "CHAP3: before Create_Type_Range_Var");
+      Ada.Text_IO.Flush (Ada.Text_IO.Standard_Error);
       Create_Type_Range_Var (Def);
+      Ada.Text_IO.Put_Line (Ada.Text_IO.Standard_Error, "CHAP3: done");
+      Ada.Text_IO.Flush (Ada.Text_IO.Standard_Error);
    end Translate_Bool_Type_Definition;
 
    procedure Translate_Subtype_Definition
@@ -2605,6 +2658,9 @@ package body Trans.Chap3 is
 
       --  Create builder for arrays and non-static records
       Tinfo := Get_Info (Def);
+      Ada.Text_IO.Put_Line (Ada.Text_IO.Standard_Error,
+         "TTS: mode=" & Type_Mode_Type'Image (Tinfo.Type_Mode));
+      Ada.Text_IO.Flush (Ada.Text_IO.Standard_Error);
       case Tinfo.Type_Mode is
          when Type_Mode_Fat_Array
            | Type_Mode_Unbounded_Record

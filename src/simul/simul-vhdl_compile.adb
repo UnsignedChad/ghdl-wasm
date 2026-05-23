@@ -16,6 +16,7 @@
 --  You should have received a copy of the GNU General Public License
 --  along with this program.  If not, see <gnu.org/licenses>.
 
+with Ada.Text_IO;
 with System;
 with Ada.Unchecked_Conversion;
 
@@ -70,6 +71,7 @@ with Grtlink;
 with Ortho_Nodes; use Ortho_Nodes;
 with Ortho_Jit; use Ortho_Jit;
 
+pragma Style_Checks (Off);
 package body Simul.Vhdl_Compile is
    function Alloc_Mem (Sz : Size_Type) return Memory_Ptr;
    pragma Import (C, Alloc_Mem, "malloc");
@@ -2134,6 +2136,9 @@ package body Simul.Vhdl_Compile is
 
       Translation.Initialize;
 
+      Ada.Text_IO.Put_Line (Ada.Text_IO.Standard_Error, "SIMUL: after Translation.Initialize");
+      Ada.Text_IO.Flush (Ada.Text_IO.Standard_Error);
+
       --  Set flags for whole translation.
       Translation.Flag_Discard_Unused := True;
       Translation.Flag_Discard_Unused_Implicit := True;
@@ -2143,9 +2148,17 @@ package body Simul.Vhdl_Compile is
       Translation.Flag_Elaboration := False;
 
       --  Translate standard.
+      Ada.Text_IO.Put_Line (Ada.Text_IO.Standard_Error, "SIMUL: before Update_Node_Infos");
+      Ada.Text_IO.Flush (Ada.Text_IO.Standard_Error);
       Trans.Update_Node_Infos;
+      Ada.Text_IO.Put_Line (Ada.Text_IO.Standard_Error, "SIMUL: before Rtis.Generate_Library Std");
+      Ada.Text_IO.Flush (Ada.Text_IO.Standard_Error);
       Trans.Rtis.Generate_Library (Libraries.Std_Library, True);
+      Ada.Text_IO.Put_Line (Ada.Text_IO.Standard_Error, "SIMUL: before Translate_Standard");
+      Ada.Text_IO.Flush (Ada.Text_IO.Standard_Error);
       Translation.Translate_Standard (True);
+      Ada.Text_IO.Put_Line (Ada.Text_IO.Standard_Error, "SIMUL: Translate_Standard done");
+      Ada.Text_IO.Flush (Ada.Text_IO.Standard_Error);
 
       --  Translate units.
       --  FIXME: discard unused units ?

@@ -14,6 +14,7 @@
 --  You should have received a copy of the GNU General Public License
 --  along with this program.  If not, see <gnu.org/licenses>.
 
+with Ada.Text_IO;
 with Vhdl.Configuration;
 with Errorout; use Errorout;
 with Vhdl.Errors; use Vhdl.Errors;
@@ -537,6 +538,8 @@ package body Trans.Chap12 is
       Conf_Info : Config_Info_Acc;
       Last_Design_Unit : Natural;
    begin
+      Ada.Text_IO.Put_Line (Ada.Text_IO.Standard_Error, "DIAG: Elab enter");
+      Ada.Text_IO.Flush (Ada.Text_IO.Standard_Error);
       Config_Lib := Get_Library_Unit (Config);
       Entity := Get_Entity (Config_Lib);
       Arch := Strip_Denoting_Name
@@ -547,6 +550,8 @@ package body Trans.Chap12 is
 
       --  If all design units are loaded, late semantic checks can be
       --  performed.
+      Ada.Text_IO.Put_Line (Ada.Text_IO.Standard_Error, "DIAG: pre-load");
+      Ada.Text_IO.Flush (Ada.Text_IO.Standard_Error);
       if Flag_Load_All_Design_Units then
          for I in Design_Units.First .. Design_Units.Last loop
             Unit := Design_Units.Table (I);
@@ -583,9 +588,17 @@ package body Trans.Chap12 is
 
       --  Generate_Library add infos, therefore the info array must be
       --  adjusted.
+      Ada.Text_IO.Put_Line (Ada.Text_IO.Standard_Error, "DIAG: Elaborate start, Update_Node_Infos");
+      Ada.Text_IO.Flush (Ada.Text_IO.Standard_Error);
       Update_Node_Infos;
+      Ada.Text_IO.Put_Line (Ada.Text_IO.Standard_Error, "DIAG: Rtis.Generate_Library Std start");
+      Ada.Text_IO.Flush (Ada.Text_IO.Standard_Error);
       Rtis.Generate_Library (Libraries.Std_Library, True);
+      Ada.Text_IO.Put_Line (Ada.Text_IO.Standard_Error, "DIAG: Translate_Standard start");
+      Ada.Text_IO.Flush (Ada.Text_IO.Standard_Error);
       Translate_Standard (Whole);
+      Ada.Text_IO.Put_Line (Ada.Text_IO.Standard_Error, "DIAG: Translate_Standard done");
+      Ada.Text_IO.Flush (Ada.Text_IO.Standard_Error);
 
       --  Std.Standard has no body and is always in the closure.  Exclude it
       --  from the stub and filelist generation.
@@ -603,6 +616,10 @@ package body Trans.Chap12 is
             Rtis.Generate_Library (Get_Library (Get_Design_File (Unit)), True);
          end if;
 
+         Ada.Text_IO.Put_Line (Ada.Text_IO.Standard_Error,
+            "DIAG: unit " & Natural'Image (Natural (I)) & " " &
+            Vhdl.Utils.Image_Identifier (Lib_Unit));
+         Ada.Text_IO.Flush (Ada.Text_IO.Standard_Error);
          case Get_Kind (Lib_Unit) is
             when Iir_Kind_Configuration_Declaration =>
                if Get_Identifier (Lib_Unit) /= Null_Identifier then

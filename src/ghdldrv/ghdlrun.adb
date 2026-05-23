@@ -15,6 +15,7 @@
 --  along with this program.  If not, see <gnu.org/licenses>.
 with System; use System;
 
+with Ada.Text_IO;
 with Ada.Unchecked_Conversion;
 with Ada.Command_Line;
 
@@ -156,8 +157,10 @@ package body Ghdlrun is
             Ortho_Jit.Init;
 
             Translation.Initialize;
-
+            raise Program_Error with "TESTPOINT: before Elaborate";
             Translation.Elaborate (Config, True);
+            Ada.Text_IO.Put_Line (Ada.Text_IO.Standard_Error, "DIAG: ghdlrun after Elaborate");
+            Ada.Text_IO.Flush (Ada.Text_IO.Standard_Error);
          when Run_Interp
            | Run_Jit =>
             --  Set flags.

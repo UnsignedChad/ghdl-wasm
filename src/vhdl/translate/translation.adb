@@ -23,6 +23,7 @@ with Std_Names;
 with Files_Map;
 with Libraries;
 with Simple_IO;
+with Ada.Text_IO;
 
 with Vhdl.Utils; use Vhdl.Utils;
 with Vhdl.Std_Package; use Vhdl.Std_Package;
@@ -45,6 +46,7 @@ with Trans.Rtis;
 with Trans.Helpers2;
 with Trans.Coverage;
 
+pragma Style_Checks (Off);
 package body Translation is
    use Trans;
    use Trans.Chap10;
@@ -744,7 +746,11 @@ package body Translation is
         (Interfaces, Param, Get_Identifier ("proc"), Ghdl_Ptr_Type);
       Finish_Subprogram_Decl (Interfaces, Ghdl_Finalize_Register);
 
+      Ada.Text_IO.Put_Line (Ada.Text_IO.Standard_Error, "DIAG: Translation.Initialize done");
+      Ada.Text_IO.Flush (Ada.Text_IO.Standard_Error);
       Coverage.Cover_Initialize;
+      Ada.Text_IO.Put_Line (Ada.Text_IO.Standard_Error, "DIAG: Coverage.Cover_Initialize done");
+      Ada.Text_IO.Flush (Ada.Text_IO.Standard_Error);
    end Initialize;
 
    procedure Create_Signal_Subprograms (Suffix          : String;
@@ -2023,13 +2029,29 @@ package body Translation is
          if Get_Kind (Decl) in Iir_Kinds_Subprogram_Declaration
            and then Is_Implicit_Subprogram (Decl)
          then
+            Ada.Text_IO.Put_Line (Ada.Text_IO.Standard_Error,
+               "TTIS: spec " & Iir_Predefined_Functions'Image (
+                  Get_Implicit_Definition (Decl)));
+            Ada.Text_IO.Flush (Ada.Text_IO.Standard_Error);
             Chap7.Translate_Implicit_Subprogram_Spec (Decl, Infos);
+            Ada.Text_IO.Put_Line (Ada.Text_IO.Standard_Error, "TTIS: body");
+            Ada.Text_IO.Flush (Ada.Text_IO.Standard_Error);
             Chap7.Translate_Implicit_Subprogram_Body (Decl);
+            Ada.Text_IO.Put_Line (Ada.Text_IO.Standard_Error, "TTIS: done");
+            Ada.Text_IO.Flush (Ada.Text_IO.Standard_Error);
+            Ada.Text_IO.Put_Line (Ada.Text_IO.Standard_Error, "TTIS: get_chain");
+            Ada.Text_IO.Flush (Ada.Text_IO.Standard_Error);
             Decl := Get_Chain (Decl);
+            Ada.Text_IO.Put_Line (Ada.Text_IO.Standard_Error, "TTIS: loop_top");
+            Ada.Text_IO.Flush (Ada.Text_IO.Standard_Error);
          else
+            Ada.Text_IO.Put_Line (Ada.Text_IO.Standard_Error, "TTIS: non-implicit, exiting loop");
+            Ada.Text_IO.Flush (Ada.Text_IO.Standard_Error);
             exit;
          end if;
       end loop;
+      Ada.Text_IO.Put_Line (Ada.Text_IO.Standard_Error, "TTIS: loop_done");
+      Ada.Text_IO.Flush (Ada.Text_IO.Standard_Error);
    end Translate_Type_Implicit_Subprograms;
 
    procedure Translate_Standard (Main : Boolean)
@@ -2041,8 +2063,11 @@ package body Translation is
       Time_Type_Staticness : Iir_Staticness;
       Time_Subtype_Staticness : Iir_Staticness;
    begin
+      Ada.Text_IO.Put_Line (Ada.Text_IO.Standard_Error, "TS: Update_Node_Infos");
+      Ada.Text_IO.Flush (Ada.Text_IO.Standard_Error);
       Update_Node_Infos;
-
+      Ada.Text_IO.Put_Line (Ada.Text_IO.Standard_Error, "TS: New_Debug_Comment_Decl");
+      Ada.Text_IO.Flush (Ada.Text_IO.Standard_Error);
       New_Debug_Comment_Decl ("package std.standard");
       if Main then
          Gen_Filename (Std_Standard_File);
@@ -2079,6 +2104,8 @@ package body Translation is
 
       --  The first (and one of the most important) declaration is the
       --  boolean type declaration.
+      Ada.Text_IO.Put_Line (Ada.Text_IO.Standard_Error, "TS: Translate_Bool_Type_Declaration");
+      Ada.Text_IO.Flush (Ada.Text_IO.Standard_Error);
       pragma Assert (Decl = Boolean_Type_Declaration);
       Chap4.Translate_Bool_Type_Declaration (Boolean_Type_Declaration);
       --  We need this type very early, for predefined functions.
@@ -2100,15 +2127,37 @@ package body Translation is
 
       --  Nothing special for other declarations.
       while Decl /= Null_Iir loop
+         Ada.Text_IO.Put_Line (Ada.Text_IO.Standard_Error,
+            "TS: loop kind=" & Iir_Kind'Image (Get_Kind (Decl))
+            & " " & Name_Table.Image (Get_Identifier (Decl)));
+         Ada.Text_IO.Flush (Ada.Text_IO.Standard_Error);
          case Get_Kind (Decl) is
             when Iir_Kind_Type_Declaration =>
+               Ada.Text_IO.Put_Line (Ada.Text_IO.Standard_Error,
+                  "TS: Translate_Type_Declaration");
+               Ada.Text_IO.Flush (Ada.Text_IO.Standard_Error);
                Chap4.Translate_Type_Declaration (Decl);
+               Ada.Text_IO.Put_Line (Ada.Text_IO.Standard_Error,
+                  "TS: Translate_Type_Declaration done");
+               Ada.Text_IO.Flush (Ada.Text_IO.Standard_Error);
                Translate_Type_Implicit_Subprograms (Decl, Main);
             when Iir_Kind_Anonymous_Type_Declaration =>
+               Ada.Text_IO.Put_Line (Ada.Text_IO.Standard_Error,
+                  "TS: Translate_Anon_Type_Declaration");
+               Ada.Text_IO.Flush (Ada.Text_IO.Standard_Error);
                Chap4.Translate_Anonymous_Type_Declaration (Decl);
+               Ada.Text_IO.Put_Line (Ada.Text_IO.Standard_Error,
+                  "TS: Translate_Anon_Type_Declaration done");
+               Ada.Text_IO.Flush (Ada.Text_IO.Standard_Error);
                Translate_Type_Implicit_Subprograms (Decl, Main);
             when Iir_Kind_Subtype_Declaration =>
+               Ada.Text_IO.Put_Line (Ada.Text_IO.Standard_Error,
+                  "TS: Translate_Subtype_Declaration");
+               Ada.Text_IO.Flush (Ada.Text_IO.Standard_Error);
                Chap4.Translate_Subtype_Declaration (Decl);
+               Ada.Text_IO.Put_Line (Ada.Text_IO.Standard_Error,
+                  "TS: Translate_Subtype_Declaration done");
+               Ada.Text_IO.Flush (Ada.Text_IO.Standard_Error);
                Decl := Get_Chain (Decl);
             when Iir_Kind_Attribute_Declaration =>
                Decl := Get_Chain (Decl);
