@@ -2145,7 +2145,11 @@ package body Simul.Vhdl_Compile is
       Translation.Flag_Discard_Unused_Generate := True;
 
 --      Translation.Flag_Direct_Drivers := False;
-      Translation.Flag_Elaboration := False;
+      --  Wasm backend NEEDS elaboration procedures in the emitted module so
+      --  JS can call them at runtime to allocate signals / register processes
+      --  / wire sensitivity. Without this, the WAT has process bodies but
+      --  no startup glue (see docs/BROWSER_NATIVE_SIM.md).
+      Translation.Flag_Elaboration := True;
 
       --  Translate standard.
       Ada.Text_IO.Put_Line (Ada.Text_IO.Standard_Error, "SIMUL: before Update_Node_Infos");
@@ -2205,8 +2209,13 @@ package body Simul.Vhdl_Compile is
          end;
       end loop;
 
-      --  Then architectures
-      for I in Elab_Units.First .. Elab_Units.Last loop
+      --  Then architectures, bottom-up. Inner instances must have their
+      --  Arch_Info registered before the outer testbench's elab body tries
+      --  to reference them in component instantiations. Elab_Units appears
+      --  in top-down order, so iterate in reverse here. Without this, the
+      --  testbench arch's STMT_ELAB hits Internal_Error in chap9 when it
+      --  tries to look up the DUT's Arch_Info.
+      for I in reverse Elab_Units.First .. Elab_Units.Last loop
          declare
             Lunit : constant Node := Elab_Units.Table (I);
          begin

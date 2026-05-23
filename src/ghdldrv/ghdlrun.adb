@@ -157,7 +157,6 @@ package body Ghdlrun is
             Ortho_Jit.Init;
 
             Translation.Initialize;
-            raise Program_Error with "TESTPOINT: before Elaborate";
             Translation.Elaborate (Config, True);
             Ada.Text_IO.Put_Line (Ada.Text_IO.Standard_Error, "DIAG: ghdlrun after Elaborate");
             Ada.Text_IO.Flush (Ada.Text_IO.Standard_Error);
