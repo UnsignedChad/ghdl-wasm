@@ -240,6 +240,7 @@ package body Ortho_Wasm is
       Ek_Select,       -- select a b cond  (for abs)
       Ek_Zero,         -- i32.const 0
       Ek_Addr_Stub,    -- placeholder for address-of (emits i32.const 0)
+      Ek_Addr_Lvalue,  -- proper address-of: encodes O_Lnode in Arg1
       Ek_Wrap_I32      -- i32.wrap_i64 (truncate i64 -> i32)
    );
 
@@ -432,6 +433,8 @@ package body Ortho_Wasm is
                Append (Buf, "(f64.const " & F64_Img (Ent.Fval) & ")");
             when Ek_Zero | Ek_Addr_Stub =>
                Append (Buf, "(i32.const 0)");
+            when Ek_Addr_Lvalue =>
+               Append (Buf, Lval_Addr_S (O_Lnode (Ent.Arg1)));
             when Ek_Local_Get =>
                Append (Buf, "(local.get $" & Get_Name (Ent.Decl) & ")");
             when Ek_Global_Get =>
@@ -1097,7 +1100,11 @@ package body Ortho_Wasm is
    function New_Address (Lvalue : O_Lnode; Atype : O_Tnode) return O_Enode is
       pragma Unreferenced (Atype);
    begin
-      return New_Expr ((Kind => Ek_Addr_Stub, others => <>));
+      --  Encode the lvalue in Arg1 so emission can pull its real address
+      --  (via Lval_Addr_S) instead of always returning (i32.const 0).
+      return New_Expr ((Kind => Ek_Addr_Lvalue,
+                        Arg1 => O_Enode (Lvalue),
+                        others => <>));
    end New_Address;
 
    function New_Unchecked_Address (Lvalue : O_Lnode; Atype : O_Tnode)
