@@ -301,6 +301,19 @@ package body Ortho_Wasm is
    --  Output buffers
    ---------------------------------------------------------------------------
 
+   --  Phase 7: const-aggregate emission. ortho_wasm previously discarded
+   --  every Start_Init_Value / New_Array_Aggr_El callback. The body then
+   --  expected (global.get $X) to point at the array data which was never
+   --  laid out, so reads returned zero (= 'U'). Now we accumulate aggregate
+   --  bytes into Aggr_Buf, emit them as a (data ...) directive at a known
+   --  address, and arrange for the global to point there at module startup.
+   Aggr_Buf      : Unbounded_String;
+   Aggr_Active   : Boolean := False;
+   Data_Buf      : Unbounded_String;
+   Init_Buf      : Unbounded_String;
+   Data_Top      : Natural := 16#18000#;
+   Pending_Init_Decl : O_Dnode := 0;
+
    Globals_Buf         : Unbounded_String;
    --  Buffer for function bodies; emitted after Globals_Buf in Finish so
    --  that every (global.get $X) follows the global's declaration (wat2wasm
@@ -736,6 +749,17 @@ package body Ortho_Wasm is
       end loop;
       --  Phase 4: flush export declarations gathered during translation.
       Put (To_String (Exports_Buf));
+      --  Phase 7: emit (data ...) segments for array-aggregate constants.
+      Put (To_String (Data_Buf));
+      --  Emit the __init_consts function that wires up the const globals
+      --  to point at their data segments. Marked with (start ...) so it
+      --  runs once at module instantiation.
+      if Length (Init_Buf) > 0 then
+         Put_Line ("  (func $__init_consts");
+         Put (To_String (Init_Buf));
+         Put_Line ("  )");
+         Put_Line ("  (start $__init_consts)");
+      end if;
       Put_Line (")");
    end Finish;
 
@@ -946,11 +970,50 @@ package body Ortho_Wasm is
 
    procedure Start_Array_Aggr
      (List : out O_Array_Aggr_List; Atype : O_Tnode; Len : Unsigned_32)
-   is pragma Unreferenced (Atype, Len); begin List := (Cnode => 0); end Start_Array_Aggr;
+   is
+      pragma Unreferenced (Atype, Len);
+   begin
+      List := (Cnode => 0);
+      Aggr_Buf := Null_Unbounded_String;
+      Aggr_Active := True;
+   end Start_Array_Aggr;
    procedure New_Array_Aggr_El (List : in out O_Array_Aggr_List; Value : O_Cnode)
-   is pragma Unreferenced (Value); begin null; end New_Array_Aggr_El;
+   is
+      pragma Unreferenced (List);
+      V : constant Integer_64 :=
+        (if Value = 0 then 0 else Cnodes (Natural (Value)).Val);
+      Iv : constant Integer_64 := V mod 2 ** 32;
+      function Esc (Byte : Natural) return String is
+         Hex : constant String := "0123456789abcdef";
+      begin
+         return "\" & Hex (Byte / 16 + 1) & Hex (Byte mod 16 + 1);
+      end Esc;
+   begin
+      if Aggr_Active then
+         Append (Aggr_Buf, Esc (Natural (Iv mod 256)));
+         Append (Aggr_Buf, Esc (Natural ((Iv / 256) mod 256)));
+         Append (Aggr_Buf, Esc (Natural ((Iv / 65536) mod 256)));
+         Append (Aggr_Buf, Esc (Natural ((Iv / 16777216) mod 256)));
+      end if;
+   end New_Array_Aggr_El;
    procedure Finish_Array_Aggr (List : in out O_Array_Aggr_List; Res : out O_Cnode)
-   is begin Res := List.Cnode; end Finish_Array_Aggr;
+   is
+      Addr  : constant Natural := Data_Top;
+      AImg  : constant String := Natural'Image (Addr);
+      ATrim : constant String := AImg (AImg'First + 1 .. AImg'Last);
+   begin
+      if Aggr_Active and then Length (Aggr_Buf) > 0 then
+         Append (Data_Buf,
+                 "  (data (i32.const " & ATrim & ") """ &
+                 To_String (Aggr_Buf) & """)" & ASCII.LF);
+         Data_Top := Data_Top + Length (Aggr_Buf) / 3;
+         Res := New_Cnode (Integer_64 (Addr), Wk_I32);
+      else
+         Res := List.Cnode;
+      end if;
+      Aggr_Buf := Null_Unbounded_String;
+      Aggr_Active := False;
+   end Finish_Array_Aggr;
 
    function New_Union_Aggr (Atype : O_Tnode; Field : O_Fnode; Value : O_Cnode)
      return O_Cnode is
@@ -1193,7 +1256,7 @@ package body Ortho_Wasm is
       Wt  : constant String := Wat_Type_Of (Atype);
    begin
       Res := New_Decl (Dk_Const, Nam, Atype);
-      Append (Globals_Buf, "  (global $" & Nam & " " & Wt &
+      Append (Globals_Buf, "  (global $" & Nam & " (mut " & Wt & ")" &
               " (" & Wt & ".const 0))" & ASCII.LF);
       if Length (Globals_Buf) > 50_000_000 then
          Ada.Text_IO.Put_Line (Ada.Text_IO.Standard_Error,
@@ -1204,9 +1267,30 @@ package body Ortho_Wasm is
    end New_Const_Decl;
 
    procedure Start_Init_Value (Decl : in out O_Dnode) is
-      pragma Unreferenced (Decl); begin null; end Start_Init_Value;
+   begin
+      Pending_Init_Decl := Decl;
+      Aggr_Buf := Null_Unbounded_String;
+      Aggr_Active := False;
+   end Start_Init_Value;
    procedure Finish_Init_Value (Decl : in out O_Dnode; Val : O_Cnode) is
-      pragma Unreferenced (Decl, Val); begin null; end Finish_Init_Value;
+      Nm : constant String :=
+        (if Natural (Decl) <= Decls_Top and then Decls (Natural (Decl)).Name_Len > 0
+         then Ident_Buf (Decls (Natural (Decl)).Name_Off
+                         .. Decls (Natural (Decl)).Name_Off + Decls (Natural (Decl)).Name_Len - 1)
+         else "");
+      V : constant Integer_64 :=
+        (if Val = 0 then 0 else Cnodes (Natural (Val)).Val);
+      VImg : constant String := Integer_64'Image (V);
+      VTrim : constant String :=
+        (if V < 0 then VImg else VImg (VImg'First + 1 .. VImg'Last));
+   begin
+      if Nm /= "" and then V /= 0 then
+         Append (Init_Buf,
+                 "    (global.set $" & Nm &
+                 " (i32.const " & VTrim & "))" & ASCII.LF);
+      end if;
+      Pending_Init_Decl := 0;
+   end Finish_Init_Value;
 
    procedure New_Var_Decl (Res : out O_Dnode; Ident : O_Ident;
                            Storage : O_Storage; Atype : O_Tnode) is
