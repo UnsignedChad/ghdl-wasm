@@ -844,10 +844,22 @@ package body Ortho_Wasm is
    function New_Array_Subtype
      (Atype : O_Tnode; El_Type : O_Tnode; Length : O_Cnode) return O_Tnode
    is
-      pragma Unreferenced (Atype, Length);
+      pragma Unreferenced (Atype);
       El_Sz : constant Natural :=
                 (if El_Type = 0 then 4 else Types (Natural (El_Type)).Sz);
-   begin return New_Type (Wk_Memory, El_Sz); end New_Array_Subtype;
+      --  Pull the element count out of the Cnode constant. Without it the
+      --  subtype's byte-size was set to the size of a SINGLE element, which
+      --  made every memcpy / aggregate copy stop after one cell and the
+      --  rest of any vector value stay at its default 0/U.
+      Len : constant Natural :=
+                (if Length = 0 then 1
+                 else Natural (Cnodes (Natural (Length)).Val));
+      --  Guard against pathological inputs (zero-length or runaway).
+      Safe_Len : constant Natural :=
+                (if Len = 0 then 1
+                 elsif Len > 4096 then 4096
+                 else Len);
+   begin return New_Type (Wk_Memory, El_Sz * Safe_Len); end New_Array_Subtype;
 
    function New_Unsigned_Type (Size : Natural) return O_Tnode is
    begin
