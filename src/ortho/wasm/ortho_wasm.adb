@@ -36,7 +36,7 @@ package body Ortho_Wasm is
       Sz   : Natural  := 4;
    end record;
 
-   Max_Types : constant := 16_384;
+   Max_Types : constant := 262_144;
    type Type_Table_T is array (1 .. Max_Types) of Type_Entry;
    Types     : Type_Table_T;
    Types_Top : Natural := 0;
@@ -88,7 +88,7 @@ package body Ortho_Wasm is
       Kind : Wat_Kind    := Wk_I32;
    end record;
 
-   Max_Cnodes : constant := 16_384;
+   Max_Cnodes : constant := 524_288;
    type Cnode_Table_T is array (1 .. Max_Cnodes) of Cnode_Entry;
    Cnodes     : Cnode_Table_T;
    Cnodes_Top : Natural := 0;
@@ -155,7 +155,7 @@ package body Ortho_Wasm is
    --  Forward spec: body is after Decls table declaration.
    function Get_Name (D : O_Dnode) return String;
 
-   Max_Decls : constant := 32_768;
+   Max_Decls : constant := 262_144;
    type Decl_Table_T is array (1 .. Max_Decls) of Decl_Entry;
    Decls     : Decl_Table_T;
    Decls_Top : Natural := 0;
@@ -214,7 +214,7 @@ package body Ortho_Wasm is
       Ftype  : O_Tnode := 0;
    end record;
 
-   Max_Fields : constant := 65_536;
+   Max_Fields : constant := 262_144;
    type Field_Table_T is array (1 .. Max_Fields) of Field_Entry;
    Fields     : Field_Table_T;
    Fields_Top : Natural := 0;
@@ -258,7 +258,7 @@ package body Ortho_Wasm is
       Args  : Ada.Strings.Unbounded.Unbounded_String;
    end record;
 
-   Max_Exprs : constant := 131_072;
+   Max_Exprs : constant := 1_048_576;
    type Expr_Table_T is array (1 .. Max_Exprs) of Expr_Entry;
    Exprs     : Expr_Table_T;
    Exprs_Top : Natural := 0;
@@ -285,7 +285,7 @@ package body Ortho_Wasm is
       Tnode : O_Tnode   := 0;
    end record;
 
-   Max_Lvals : constant := 131_072;
+   Max_Lvals : constant := 1_048_576;
    type Lval_Table_T is array (1 .. Max_Lvals) of Lval_Entry;
    Lvals     : Lval_Table_T;
    Lvals_Top : Natural := 0;
@@ -462,14 +462,17 @@ package body Ortho_Wasm is
                        & ")");
             when Ek_Binop =>
                declare
+                  --  Float arithmetic in WASM uses .div / .rem without
+                  --  signed/unsigned suffix; integer arithmetic uses _s.
+                  Is_F : constant Boolean := Wt = "f64";
                   Op_S : constant String :=
                     (case Ent.Op is
                         when ON_Add_Ov => Wt & ".add",
                         when ON_Sub_Ov => Wt & ".sub",
                         when ON_Mul_Ov => Wt & ".mul",
-                        when ON_Div_Ov => Wt & ".div_s",
-                        when ON_Rem_Ov => Wt & ".rem_s",
-                        when ON_Mod_Ov => Wt & ".rem_s",
+                        when ON_Div_Ov => Wt & (if Is_F then ".div" else ".div_s"),
+                        when ON_Rem_Ov => Wt & (if Is_F then ".min" else ".rem_s"),
+                        when ON_Mod_Ov => Wt & (if Is_F then ".min" else ".rem_s"),
                         when ON_And    => Wt & ".and",
                         when ON_Or     => Wt & ".or",
                         when ON_Xor    => Wt & ".xor",
@@ -492,14 +495,21 @@ package body Ortho_Wasm is
                      Emit_Expr_To (Ent.Arg1, Buf);
                      Append (Buf, ")");
                   when ON_Abs_Ov =>
-                     --  abs(x): select x (-x) (x>=0)
-                     Append (Buf, "(select ");
-                     Emit_Expr_To (Ent.Arg1, Buf);
-                     Append (Buf, " (" & Wt & ".sub (" & Wt & ".const 0) ");
-                     Emit_Expr_To (Ent.Arg1, Buf);
-                     Append (Buf, ") (" & Wt & ".ge_s ");
-                     Emit_Expr_To (Ent.Arg1, Buf);
-                     Append (Buf, " (" & Wt & ".const 0)))");
+                     --  abs(x): for floats use the dedicated f64.abs.
+                     --  For integers: select x (-x) (x>=0).
+                     if Wt = "f64" then
+                        Append (Buf, "(f64.abs ");
+                        Emit_Expr_To (Ent.Arg1, Buf);
+                        Append (Buf, ")");
+                     else
+                        Append (Buf, "(select ");
+                        Emit_Expr_To (Ent.Arg1, Buf);
+                        Append (Buf, " (" & Wt & ".sub (" & Wt & ".const 0) ");
+                        Emit_Expr_To (Ent.Arg1, Buf);
+                        Append (Buf, ") (" & Wt & ".ge_s ");
+                        Emit_Expr_To (Ent.Arg1, Buf);
+                        Append (Buf, " (" & Wt & ".const 0)))");
+                     end if;
                   when others => null;
                end case;
             when Ek_Compare =>
@@ -514,14 +524,16 @@ package body Ortho_Wasm is
                   --  wider operand down with i32.wrap_i64.
                   Wt2  : constant String :=
                     (if K1 = Wk_I32 or K2 = Wk_I32 then "i32" else Wat_Type_Of (T1));
+                  --  Float comparisons in WASM have no _s/_u suffix.
+                  Sfx  : constant String := (if Wt2 = "f64" then "" else "_s");
                   Op_S : constant String :=
                     (case Ent.Op is
                         when ON_Eq  => Wt2 & ".eq",
                         when ON_Neq => Wt2 & ".ne",
-                        when ON_Le  => Wt2 & ".le_s",
-                        when ON_Lt  => Wt2 & ".lt_s",
-                        when ON_Ge  => Wt2 & ".ge_s",
-                        when ON_Gt  => Wt2 & ".gt_s",
+                        when ON_Le  => Wt2 & ".le" & Sfx,
+                        when ON_Lt  => Wt2 & ".lt" & Sfx,
+                        when ON_Ge  => Wt2 & ".ge" & Sfx,
+                        when ON_Gt  => Wt2 & ".gt" & Sfx,
                         when others => Wt2 & ".eq");
                   procedure Emit_Arg (E : O_Enode; K : Wat_Kind) is
                   begin
@@ -1042,8 +1054,15 @@ package body Ortho_Wasm is
    function New_Subprogram_Address (Subprg : O_Dnode; Atype : O_Tnode)
      return O_Cnode is
       pragma Unreferenced (Atype);
+      Si : constant Natural := Natural (Subprg);
    begin
-      return New_Cnode (Integer_64 (Decls (Natural (Subprg)).Idx), Wk_I32);
+      if Si = 0 or else Si > Decls_Top then
+         Ada.Text_IO.Put_Line (Ada.Text_IO.Standard_Error,
+            "WASM: New_Subprogram_Address out-of-range Subprg=" & Natural'Image (Si));
+         Ada.Text_IO.Flush (Ada.Text_IO.Standard_Error);
+         return New_Cnode (0, Wk_I32);
+      end if;
+      return New_Cnode (Integer_64 (Decls (Si).Idx), Wk_I32);
    end New_Subprogram_Address;
 
    function New_Global_Address (Lvalue : O_Gnode; Atype : O_Tnode) return O_Cnode is

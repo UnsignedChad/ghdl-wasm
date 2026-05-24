@@ -2274,6 +2274,16 @@ package body Trans.Chap9 is
       else
          Arch_Info := null;
       end if;
+
+      --  When the architecture has not been translated (Arch_Info = null),
+      --  we can only refer to it through external declarations and we have
+      --  no usable Config_Subprg.  Discard the configuration in that case
+      --  so the external-decl path below treats it like an unconfigured
+      --  instance.  This is required for simul-driven elaboration of large
+      --  designs where not every architecture body is in Elab_Units.
+      if Arch_Info = null then
+         Config := Null_Iir;
+      end if;
       if Arch_Info = null or Config = Null_Iir then
          declare
             function Get_Arch_Name return String is
@@ -2328,11 +2338,10 @@ package body Trans.Chap9 is
       end if;
 
       if Arch_Info = null then
-         if Config /= Null_Iir then
-            --  Architecture is unknown, but we know how to configure
-            --  the block inside it.
-            raise Internal_Error;
-         end if;
+         --  Architecture not translated.  Config has been forced to null
+         --  above, so the external Arch_Elab/DEFAULT_CONFIG decls are
+         --  already emitted.  Nothing more to set up here.
+         null;
       else
          Instance_Size := Arch_Info.Block_Instance_Size;
          Arch_Elab := Arch_Info.Block_Elab_Subprg;
@@ -2495,6 +2504,9 @@ package body Trans.Chap9 is
          Info        : constant Block_Info_Acc := Get_Info (Bod);
          Var         : O_Dnode;
       begin
+         if Info = null then
+            return;
+         end if;
          Var := Create_Temp (Info.Block_Decls_Ptr_Type);
 
          New_Assign_Stmt
@@ -2721,6 +2733,9 @@ package body Trans.Chap9 is
          Info : constant Block_Info_Acc := Get_Info (Bod);
          Var : O_Dnode;
       begin
+         if Info = null then
+            return;
+         end if;
          Start_Choice (Case_Blk);
          New_Expr_Choice
            (Case_Blk, New_Index_Lit (Unsigned_64 (Info.Block_Id)));
