@@ -2144,7 +2144,13 @@ package body Simul.Vhdl_Compile is
       Translation.Flag_Discard_Unused_Implicit := True;
       Translation.Flag_Discard_Unused_Generate := True;
 
---      Translation.Flag_Direct_Drivers := False;
+      --  Wasm: keep process bodies on the simple_assign path. With
+      --  direct drivers on, processes write to per-process driver records
+      --  whose address is passed to __ghdl_signal_add_direct_driver as the
+      --  second arg — but in the synth-vhdl_compile flow that Mnode comes
+      --  out null, so JS has no way to find the value when direct_assign
+      --  fires. Simple-assign passes (sig, value) directly.
+      Translation.Flag_Direct_Drivers := False;
       --  Wasm backend NEEDS elaboration procedures in the emitted module so
       --  JS can call them at runtime to allocate signals / register processes
       --  / wire sensitivity. Without this, the WAT has process bodies but

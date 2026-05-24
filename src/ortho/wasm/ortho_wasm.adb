@@ -1200,6 +1200,22 @@ package body Ortho_Wasm is
                            Storage : O_Storage; Atype : O_Tnode) is
       Nam : constant String := Get_String (Ident);
       Wt  : constant String := Wat_Type_Of (Atype);
+      --  For Wk_Memory locals (records / arrays), GHDL'''s upper layers expect
+      --  the local to hold a POINTER to caller-or-locally-allocated storage,
+      --  and they often take its address via New_Unchecked_Address. The standard
+      --  mcode / llvm back-ends allocate that storage automatically. We do the
+      --  same here: emit a stack2_allocate call as the first statement of the
+      --  function body so each composite local has backing memory.
+      Auto_Alloc : constant Boolean :=
+        Storage = O_Storage_Local
+        and then Atype /= 0
+        and then Wat_Kind_Of (Atype) = Wk_Memory
+        and then Types (Natural (Atype)).Sz > 0;
+      Alloc_Sz : constant Natural :=
+        (if Auto_Alloc then Natural'Max (Types (Natural (Atype)).Sz, 32) else 0);
+      AlImg : constant String := Natural'Image (Alloc_Sz);
+      AlTrim : constant String :=
+        (if AlImg'Length >= 2 then AlImg (AlImg'First + 1 .. AlImg'Last) else AlImg);
    begin
       if Storage = O_Storage_Local then
          Res := New_Decl (Dk_Local, Nam, Atype);
@@ -1208,6 +1224,12 @@ package body Ortho_Wasm is
             if Index (Cur_Func.Locals, "$" & Nam & " ") = 0 then
                Append (Cur_Func.Locals,
                        "    (local $" & Nam & " " & Wt & ")" & ASCII.LF);
+               if Auto_Alloc then
+                  Append (Cur_Func.Body_Buf,
+                          "    (local.set $" & Nam &
+                          " (call $__ghdl_stack2_allocate (i32.const " & AlTrim &
+                          ")))" & ASCII.LF);
+               end if;
             end if;
             if Length (Cur_Func.Locals) > 10_000_000 then
                Ada.Text_IO.Put_Line (Ada.Text_IO.Standard_Error,
