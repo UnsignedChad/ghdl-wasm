@@ -427,6 +427,57 @@ package body Ortho_Wasm is
 
    procedure Emit_Expr_To (E : O_Enode; Buf : in out Unbounded_String);
 
+   --  Return the wat-kind string ("i32", "i64", "f64") of an expression.
+   function Expr_Wt (E : O_Enode) return String is
+   begin
+      if E = 0 then
+         return "i32";
+      end if;
+      return Wat_Type_Of (Exprs (Natural (E)).Etype);
+   end Expr_Wt;
+
+   --  Emit an expression and coerce its result to Target wat type if
+   --  necessary.  Inserts i32.wrap_i64, i64.extend_i32_s, f64.convert_i32_s
+   --  or i32.trunc_f64_s glue when the operand kind differs from Target.
+   procedure Emit_Coerced_To (E : O_Enode; Target : String;
+                              Buf : in out Unbounded_String);
+
+   procedure Emit_Coerced_To (E : O_Enode; Target : String;
+                              Buf : in out Unbounded_String)
+   is
+      Src : constant String := Expr_Wt (E);
+   begin
+      if Src = Target then
+         Emit_Expr_To (E, Buf);
+      elsif Src = "i64" and Target = "i32" then
+         Append (Buf, "(i32.wrap_i64 ");
+         Emit_Expr_To (E, Buf);
+         Append (Buf, ")");
+      elsif Src = "i32" and Target = "i64" then
+         Append (Buf, "(i64.extend_i32_s ");
+         Emit_Expr_To (E, Buf);
+         Append (Buf, ")");
+      elsif Src = "i32" and Target = "f64" then
+         Append (Buf, "(f64.convert_i32_s ");
+         Emit_Expr_To (E, Buf);
+         Append (Buf, ")");
+      elsif Src = "i64" and Target = "f64" then
+         Append (Buf, "(f64.convert_i64_s ");
+         Emit_Expr_To (E, Buf);
+         Append (Buf, ")");
+      elsif Src = "f64" and Target = "i32" then
+         Append (Buf, "(i32.trunc_f64_s ");
+         Emit_Expr_To (E, Buf);
+         Append (Buf, ")");
+      elsif Src = "f64" and Target = "i64" then
+         Append (Buf, "(i64.trunc_f64_s ");
+         Emit_Expr_To (E, Buf);
+         Append (Buf, ")");
+      else
+         Emit_Expr_To (E, Buf);
+      end if;
+   end Emit_Coerced_To;
+
    procedure Emit_Expr_To (E : O_Enode; Buf : in out Unbounded_String) is
    begin
       if E = 0 then
@@ -479,9 +530,9 @@ package body Ortho_Wasm is
                         when others    => Wt & ".add");
                begin
                   Append (Buf, "(" & Op_S & " ");
-                  Emit_Expr_To (Ent.Arg1, Buf);
+                  Emit_Coerced_To (Ent.Arg1, Wt, Buf);
                   Append (Buf, " ");
-                  Emit_Expr_To (Ent.Arg2, Buf);
+                  Emit_Coerced_To (Ent.Arg2, Wt, Buf);
                   Append (Buf, ")");
                end;
             when Ek_Monop =>
@@ -536,14 +587,9 @@ package body Ortho_Wasm is
                         when ON_Gt  => Wt2 & ".gt" & Sfx,
                         when others => Wt2 & ".eq");
                   procedure Emit_Arg (E : O_Enode; K : Wat_Kind) is
+                     pragma Unreferenced (K);
                   begin
-                     if Wt2 = "i32" and K = Wk_I64 then
-                        Append (Buf, "(i32.wrap_i64 ");
-                        Emit_Expr_To (E, Buf);
-                        Append (Buf, ")");
-                     else
-                        Emit_Expr_To (E, Buf);
-                     end if;
+                     Emit_Coerced_To (E, Wt2, Buf);
                   end Emit_Arg;
                begin
                   Append (Buf, "(" & Op_S & " ");
@@ -632,6 +678,41 @@ package body Ortho_Wasm is
          end case;
       end;
    end Lval_Read_S;
+
+   --  Return the wat-kind string of an lvalue based on its Tnode.
+   function Lval_Wt (L : O_Lnode) return String is
+   begin
+      if L = 0 then return "i32"; end if;
+      declare
+         Lv : Lval_Entry renames Lvals (Natural (L));
+      begin
+         if Lv.Tnode /= 0 then
+            return Wat_Type_Of (Lv.Tnode);
+         end if;
+         --  Composite/pointer lvalues default to i32.
+         return "i32";
+      end;
+   end Lval_Wt;
+
+   --  Build a wat string that coerces Val (currently of type Src) to Target.
+   function Coerced_S (Val : String; Src, Target : String) return String is
+   begin
+      if Src = Target then return Val; end if;
+      if Src = "i64" and Target = "i32" then
+         return "(i32.wrap_i64 " & Val & ")";
+      elsif Src = "i32" and Target = "i64" then
+         return "(i64.extend_i32_s " & Val & ")";
+      elsif Src = "i32" and Target = "f64" then
+         return "(f64.convert_i32_s " & Val & ")";
+      elsif Src = "i64" and Target = "f64" then
+         return "(f64.convert_i64_s " & Val & ")";
+      elsif Src = "f64" and Target = "i32" then
+         return "(i32.trunc_f64_s " & Val & ")";
+      elsif Src = "f64" and Target = "i64" then
+         return "(i64.trunc_f64_s " & Val & ")";
+      end if;
+      return Val;
+   end Coerced_S;
 
    --  Write Val into lvalue L.
    function Lval_Write_S (L : O_Lnode; Val : String) return String is
@@ -742,11 +823,28 @@ package body Ortho_Wasm is
                --  If the name matches one of the imports we ALREADY declared
                --  in Init (anything starting with "__ghdl_"), skip — emitting a
                --  func with the same name as an import is a wat2wasm error.
+               function Ends_With (Suffix : String) return Boolean is
+               begin
+                  return Nm'Length >= Suffix'Length
+                    and then Nm (Nm'Last - Suffix'Length + 1 .. Nm'Last)
+                             = Suffix;
+               end Ends_With;
+               --  Default param signature for elab/config stubs when the
+               --  Decls.Params field is empty (simul-driven external-decl
+               --  path skips New_Interface_Decl for some instantiations).
+               Default_Param : constant Boolean :=
+                 Length (Decls (I).Params) = 0
+                 and then Length (Decls (I).Saved_Params) = 0
+                 and then (Ends_With ("DECL_ELAB")
+                           or else Ends_With ("STMT_ELAB")
+                           or else Ends_With ("DEFAULT_CONFIG"));
+               Param_Str : constant String :=
+                 (if Default_Param then " (param $INSTANCE i32)"
+                  else To_String (Decls (I).Params)
+                       & To_String (Decls (I).Saved_Params));
             begin
                if Nm'Length < 7 or else Nm (Nm'First .. Nm'First + 6) /= "__ghdl_" then
-                  Put ("  (func $" & Nm
-                       & To_String (Decls (I).Params)
-                       & To_String (Decls (I).Saved_Params));
+                  Put ("  (func $" & Nm & Param_Str);
                   if Decls (I).Tnode /= 0 then
                      Put (" (result " & Wat_Type_Of (Decls (I).Tnode) & ")");
                   end if;
@@ -1206,9 +1304,14 @@ package body Ortho_Wasm is
    begin return New_Address (Lvalue, Atype); end New_Unchecked_Address;
 
    function New_Value (Lvalue : O_Lnode) return O_Enode is
+      Etype : O_Tnode := 0;
    begin
-      return New_Expr ((Kind => Ek_Load,
-                        Arg1 => O_Enode (Lvalue),   -- encode lval as enode
+      if Lvalue /= 0 then
+         Etype := Lvals (Natural (Lvalue)).Tnode;
+      end if;
+      return New_Expr ((Kind  => Ek_Load,
+                        Arg1  => O_Enode (Lvalue),   -- encode lval as enode
+                        Etype => Etype,
                         others => <>));
    end New_Value;
 
@@ -1313,8 +1416,31 @@ package body Ortho_Wasm is
 
    procedure New_Var_Decl (Res : out O_Dnode; Ident : O_Ident;
                            Storage : O_Storage; Atype : O_Tnode) is
-      Nam : constant String := Get_String (Ident);
+      Base_Nam : constant String := Get_String (Ident);
       Wt  : constant String := Wat_Type_Of (Atype);
+      --  If a local with the same name was already declared in this
+      --  function with a DIFFERENT wat type, use a type-suffixed name
+      --  so the two coexist without clashing.  Temp names like $T5_0
+      --  get reused by the upper layers across integer and float
+      --  contexts; declaring them once as i32 makes f64 assignments
+      --  fail wat2wasm type checking.
+      function Resolve_Nam return String is
+         Probe : constant String := "$" & Base_Nam & " " & Wt;
+      begin
+         if Storage /= O_Storage_Local or else not In_Func then
+            return Base_Nam;
+         end if;
+         --  Same name + same type already present? -> reuse.
+         if Index (Cur_Func.Locals, Probe & ")") > 0 then
+            return Base_Nam;
+         end if;
+         --  Same name + different type? -> suffix with type.
+         if Index (Cur_Func.Locals, "$" & Base_Nam & " ") > 0 then
+            return Base_Nam & "_" & Wt;
+         end if;
+         return Base_Nam;
+      end Resolve_Nam;
+      Nam : constant String := Resolve_Nam;
       --  For Wk_Memory locals (records / arrays), GHDL'''s upper layers expect
       --  the local to hold a POINTER to caller-or-locally-allocated storage,
       --  and they often take its address via New_Unchecked_Address. The standard
@@ -1582,9 +1708,14 @@ package body Ortho_Wasm is
 
    function New_Function_Call (Assocs : O_Assoc_List) return O_Enode is
       Result : O_Enode;
+      Ret_T  : O_Tnode := 0;
    begin
+      if Assocs.Func /= 0 then
+         Ret_T := Decls (Natural (Assocs.Func)).Tnode;
+      end if;
       Result := New_Expr ((Kind => Ek_Call, Decl => Assocs.Func,
-                           Args => Pending_Call_Args, others => <>));
+                           Args => Pending_Call_Args,
+                           Etype => Ret_T, others => <>));
       Pending_Call_Args := Null_Unbounded_String;
       return Result;
    end New_Function_Call;
@@ -1597,8 +1728,10 @@ package body Ortho_Wasm is
    end New_Procedure_Call;
 
    procedure New_Assign_Stmt (Target : O_Lnode; Value : O_Enode) is
+      Tgt : constant String := Lval_Wt (Target);
+      Src : constant String := Expr_Wt (Value);
    begin
-      Emit_Ln (Lval_Write_S (Target, Expr_S (Value)));
+      Emit_Ln (Lval_Write_S (Target, Coerced_S (Expr_S (Value), Src, Tgt)));
    end New_Assign_Stmt;
 
    procedure New_Return_Stmt (Value : O_Enode) is
