@@ -2,6 +2,8 @@
 
 A fork of [GHDL](https://github.com/ghdl/ghdl) that adds a **WebAssembly (WASM) backend**, enabling VHDL designs to be compiled and simulated directly in the browser.
 
+**Try it without building anything:** [vhdl.ai/vhdlive](https://vhdl.ai/vhdlive) hosts a live deployment that exercises both this backend and [ghdl-browser](https://github.com/UnsignedChad/ghdl-browser) — open it in any modern browser, write VHDL, hit Simulate.
+
 > **Looking for the in-browser GHDL itself?** This repo holds the *compiler backend* — the Ada code under
 > `src/ortho/wasm/` that teaches GHDL how to emit WebAssembly text (WAT) instead of native machine code.
 > If you want the user-facing port of GHDL that actually runs `analyze → elaborate → compile` inside a
